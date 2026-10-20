@@ -906,8 +906,15 @@ static void las_gles_window_probe(void) {
     exit(0);
 }
 #endif
+#include "../backend_select.h"
+
 void ui_window_init(void) {
 #ifdef __ANDROID__
+    if (nvn_backend_kind() == NVN_BACKEND_GLES_EXPERIMENTAL) {
+        LOG("[gles-backend] experimental startup selected\n");
+        LOG("[gles-backend] diagnostic window only; NVN execution unavailable\n");
+        las_gles_window_probe();
+    }
     if (getenv("LARECOMP_GLES_WINDOW_PROBE") ||
         access("/sdcard/Android/data/com.lasrecomp.android/files/gles-window-probe", F_OK) == 0) {
         las_gles_window_probe();
