@@ -19,7 +19,7 @@ SDK=${ANDROID_HOME:-${LOCALAPPDATA:-$HOME}/Android/Sdk}
 SDK=${SDK//\\//}
 NDK=${ANDROID_NDK:-$SDK/ndk/30.0.16248370}
 CMAKE_DIR=$SDK/cmake/3.30.4/bin
-API=30
+API=29
 JOBS=$(nproc 2>/dev/null || echo 8)
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
 CMAKE=$CMAKE_DIR/cmake$EXE

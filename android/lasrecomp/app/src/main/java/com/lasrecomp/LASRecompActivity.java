@@ -158,7 +158,7 @@ public class LASRecompActivity extends SDLActivity {
             }
             PowerManager pm = getSystemService(PowerManager.class);
             int thermal = pm != null ? pm.getCurrentThermalStatus() : -1;
-            float headroom = pm != null ? pm.getThermalHeadroom(10) : -1;
+            float headroom = (pm != null && android.os.Build.VERSION.SDK_INT >= 30) ? pm.getThermalHeadroom(10) : -1;
             nativeDeviceStats(temp, pct, watts, thermal, Float.isNaN(headroom) ? -1 : headroom);
         } catch (Throwable t) {  // (also before libmain is loaded: UnsatisfiedLinkError)
             Log.w(TAG, "device stats: " + t);

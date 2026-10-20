@@ -41,7 +41,7 @@ file(GLOB VK_SRC CONFIGURE_DEPENDS ${R}/runtime/nvn/vulkan/*.c ${R}/runtime/nvn/
 file(GLOB UI_SRC CONFIGURE_DEPENDS ${R}/runtime/ui/*.mm)
 set(IMGUI ${R}/third_party/imgui)
 set(IMGUI_SRC ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp
-    ${IMGUI}/backends/imgui_impl_sdl3.cpp ${IMGUI}/backends/imgui_impl_vulkan.cpp)
+    ${IMGUI}/backends/imgui_impl_sdl3.cpp ${IMGUI}/backends/imgui_impl_vulkan.cpp ${IMGUI}/backends/imgui_impl_opengl3.cpp)
 
 add_library(main SHARED ${RT_SRC} ${R}/runtime/platform/android.c ${VK_SRC} ${UI_SRC} ${IMGUI_SRC}
             ${DEPS}/volk/volk.c ${R}/android/common/guest_window.c)
@@ -64,6 +64,6 @@ endif()
 # game thread's time
 target_compile_options(main PRIVATE -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Wno-format  # (as on Linux: %llx for uint64_t)
     $<$<COMPILE_LANGUAGE:CXX>:-std=c++17>)
-target_link_libraries(main PRIVATE SDL3 shaderc_shared adrenotools android log dl m)
+target_link_libraries(main PRIVATE SDL3 shaderc_shared adrenotools android log dl m GLESv3 EGL)
 # (runtime/hle.h, ipc.h, main.c: tables in named sections found through __start_ / __stop_ symbols)
 target_link_options(main PRIVATE -Wl,-z,nostart-stop-gc)

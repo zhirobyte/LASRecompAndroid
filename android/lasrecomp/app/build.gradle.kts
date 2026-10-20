@@ -19,7 +19,7 @@ android {
 
     defaultConfig {
         applicationId = "com.lasrecomp.android"
-        minSdk = 30
+        minSdk = 29
         targetSdk = 36
         versionCode = 12
         versionName = "0.3.8"

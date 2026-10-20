@@ -11,7 +11,7 @@ cd "$(dirname "$0")"
 P=$PWD/out
 NDK=${ANDROID_NDK_LINUX:-$HOME/android-ndk-r30}
 W=$HOME/lasrecomp-ffmpeg
-API=30
+API=29
 mkdir -p "$W" "$P/include" "$P/lib"
 
 if [ ! -x "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then

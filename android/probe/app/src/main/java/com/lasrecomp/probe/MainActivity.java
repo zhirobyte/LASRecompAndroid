@@ -66,9 +66,13 @@ public class MainActivity extends Activity {
 
     private void run() {
         String libDir = getApplicationInfo().nativeLibraryDir;
+        String socInfo = "unavailable on Android API " + Build.VERSION.SDK_INT;
+        if (Build.VERSION.SDK_INT >= 31) {
+            socInfo = Build.SOC_MANUFACTURER + " " + Build.SOC_MODEL;
+        }
         section("== Aparelho\n" + Build.MANUFACTURER + " " + Build.MODEL + " (" + Build.DEVICE + "), Android "
-                + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + "), SoC " + Build.SOC_MANUFACTURER + " "
-                + Build.SOC_MODEL + "\nnativeLibraryDir: " + libDir + "\n");
+                + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + "), SoC " + socInfo
+                + "\nnativeLibraryDir: " + libDir + "\n");
         section(memoryProbe());
         section(vulkanProbe(libDir, null, null));
         List<File[]> drivers = customDrivers();

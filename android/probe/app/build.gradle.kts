@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId = "com.lasrecomp.probe"
-        minSdk = 31  // (Build.SOC_MODEL)
+        minSdk = 29  // (Build.SOC_MODEL)
         targetSdk = 36
         versionCode = 1
         versionName = "0.1"

@@ -31,6 +31,11 @@
 #endif
 #include "imgui_impl_sdl3.h"
 
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#include "imgui_impl_opengl3.h"
+#endif
+
 extern "C" {
 #ifndef LARECOMP_NO_FFMPEG  // (Android, for now: docs/ANDROID-PORT.md, Fase 2)
 #include <libavcodec/avcodec.h>
@@ -568,6 +573,31 @@ static uint64_t g_bg;  // ImGui texture id (Vulkan descriptor set)
 #define BG_TEXID ((ImTextureID)g_bg)
 typedef void *GpuDevice;
 #endif
+#ifdef __ANDROID__
+static uint64_t gl_imgui_texture_rgba(const void *pixels, int w, int h) {
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    if (!texture) return 0;
+
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    return (uint64_t)texture;
+}
+
+static void gl_imgui_texture_delete(uint64_t id) {
+    if (!id) return;
+    GLuint texture = (GLuint)id;
+    glDeleteTextures(1, &texture);
+}
+#endif
 static int g_bg_w, g_bg_h;
 
 static void load_background(GpuDevice dev) {
@@ -582,7 +612,7 @@ static void load_background(GpuDevice dev) {
             std::vector<uint8_t> pixels((size_t)rgba->w * rgba->h * 4);
             for (int y = 0; y < rgba->h; y++)
                 memcpy(pixels.data() + (size_t)y * rgba->w * 4, (uint8_t *)rgba->pixels + (size_t)y * rgba->pitch, (size_t)rgba->w * 4);
-            g_bg = vk_imgui_texture_rgba(pixels.data(), rgba->w, rgba->h);
+            g_bg = gl_imgui_texture_rgba(pixels.data(), rgba->w, rgba->h);
             g_bg_w = rgba->w; g_bg_h = rgba->h;
             SDL_DestroySurface(rgba);
             if (g_bg) return;
@@ -628,7 +658,11 @@ static void load_background(GpuDevice dev) {
                 [g_bg replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:rgba.data() bytesPerRow:w * 4];
 #else
                 (void)dev;
+                #ifdef __ANDROID__
+                g_bg = gl_imgui_texture_rgba(rgba.data(), w, h);
+#else
                 g_bg = vk_imgui_texture_rgba(rgba.data(), w, h);
+#endif
 #endif
                 g_bg_w = w, g_bg_h = h;
             }
@@ -1076,8 +1110,53 @@ extern "C" void launcher_run(const char *root) {
         pthread_t t;
         if (pthread_create(&t, NULL, update_thread, NULL) == 0) pthread_detach(t);
     }
+#ifdef __ANDROID__
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+        fprintf(stderr, "[launcher] SDL_Init failed: %s\n", SDL_GetError());
+        return;
+    }
+
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+
+    SDL_Window *win = SDL_CreateWindow(
+        "LAS Recomp",
+        1280,
+        720,
+        SDL_WINDOW_OPENGL |
+        SDL_WINDOW_FULLSCREEN |
+        SDL_WINDOW_HIGH_PIXEL_DENSITY
+    );
+
+    if (!win) {
+        fprintf(stderr, "[launcher] SDL_CreateWindow failed: %s\n", SDL_GetError());
+        return;
+    }
+
+    SDL_GLContext gl_context = SDL_GL_CreateContext(win);
+
+    if (!gl_context) {
+        fprintf(stderr, "[launcher] OpenGL ES context failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(win);
+        return;
+    }
+
+    if (!SDL_GL_MakeCurrent(win, gl_context)) {
+        fprintf(stderr, "[launcher] SDL_GL_MakeCurrent failed: %s\n", SDL_GetError());
+        SDL_GL_DestroyContext(gl_context);
+        SDL_DestroyWindow(win);
+        return;
+    }
+
+    SDL_GL_SetSwapInterval(1);
+
+    fprintf(stderr, "[launcher] OpenGL ES context initialized\n");
+#else
     ui_window_init();
     SDL_Window *win = ui_window();
+#endif
+
     g_launcher_win = win;
 #ifdef __APPLE__
     CAMetalLayer *layer = (__bridge CAMetalLayer *)ui_metal_layer();
@@ -1122,8 +1201,13 @@ extern "C" void launcher_run(const char *root) {
     ImGui_ImplSDL3_InitForMetal(win);
     ImGui_ImplMetal_Init(dev);
 #else
+#ifdef __ANDROID__
+    ImGui_ImplSDL3_InitForOpenGL(win, gl_context);
+    ImGui_ImplOpenGL3_Init("#version 300 es");
+#else
     ImGui_ImplSDL3_InitForVulkan(win);
     vk_imgui_backend_init();
+#endif
 #endif
     ImGui_ImplSDL3_SetGamepadMode(ImGui_ImplSDL3_GamepadMode_Manual, NULL, 0);  // (controllers: launcher_pad_event)
     launcher_pad_open_all();
@@ -1246,8 +1330,19 @@ extern "C" void launcher_run(const char *root) {
             if (on_time) plat_sleep_until_ns(next_frame);
             next_frame = (on_time ? next_frame : now) + period;
             static const float clear_col[4] = {0.04f, 0.05f, 0.06f, 1};
+#ifdef __ANDROID__
+            int fb_w = 0, fb_h = 0;
+            SDL_GetWindowSizeInPixels(win, &fb_w, &fb_h);
+
+            glViewport(0, 0, fb_w, fb_h);
+            glClearColor(clear_col[0], clear_col[1], clear_col[2], clear_col[3]);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            ImGui_ImplOpenGL3_NewFrame();
+#else
             if (!vk_frame_begin(clear_col)) { SDL_Delay(16); continue; }
             ImGui_ImplVulkan_NewFrame();
+#endif
 #endif
             ImGui_ImplSDL3_NewFrame();
             // the backend (manual mode, no gamepads of its own) clears HasGamepad every frame, and ImGui then drops the
@@ -1589,7 +1684,13 @@ extern "C" void launcher_run(const char *root) {
                 if (seen_frame != ImGui::GetFrameCount() - 1) focus_first = 4;
                 seen_frame = ImGui::GetFrameCount();
                 auto first_row = [&] {
-                    if (focus_first > 0 && focus_first--) ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+                    if (focus_first > 0) {
+                        ImGuiID item_id = ImGui::GetItemID();
+                        if (item_id != 0) {
+                            ImGui::SetFocusID(item_id, ImGui::GetCurrentWindow());
+                            --focus_first;
+                        }
+                    }
                 };
                 opt_begin("##files", sc);
                 if (!ready) {
@@ -1800,10 +1901,15 @@ extern "C" void launcher_run(const char *root) {
                 exit(0);
             }
 #else
+#ifdef __ANDROID__
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            SDL_GL_SwapWindow(win);
+#else
             ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)vk_frame_cmd());
             bool shot = shot_at && ++frame == shot_at;
             vk_frame_end(shot ? getenv("LARECOMP_SHOT_PATH") ? getenv("LARECOMP_SHOT_PATH") : "build/launcher.png" : NULL);
             if (shot) exit(0);
+#endif
 #endif
         }
     }
@@ -1813,11 +1919,21 @@ extern "C" void launcher_run(const char *root) {
 #ifdef __APPLE__
     ImGui_ImplMetal_Shutdown();
 #else
+#ifdef __ANDROID__
+    ImGui_ImplOpenGL3_Shutdown();
+#else
     vk_imgui_backend_shutdown();
+#endif
 #endif
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext(ctx);
     ImGui::SetCurrentContext(prev_ctx);
+#ifdef __ANDROID__
+    gl_imgui_texture_delete(g_bg);
+    SDL_GL_DestroyContext(gl_context);
+    SDL_DestroyWindow(win);
+    g_launcher_win = NULL;
+#endif
     g_bg = 0;
     g_start_screen = 0;
 }
