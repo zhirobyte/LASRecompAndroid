@@ -130,3 +130,67 @@ void gles_run_dispatch_selftest(void)
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
 }
+void gles_run_dispatch_failure_tests(void)
+{
+    /*
+     * Unsupported draw command should be counted,
+     * without being mistaken for a GPU execution failure.
+     */
+    struct {
+        EndRecord draw;
+        EndRecord end;
+    } unsupported = {0};
+
+    unsupported.draw.op = CMD_DRAW_ARRAYS;
+    unsupported.draw.size = sizeof(EndRecord);
+    unsupported.end.op = CMD_END;
+    unsupported.end.size = sizeof(EndRecord);
+
+    GlesExecStats stats = {0};
+
+    bool decoded = gles_execute_test_command_list(
+        (uint64_t)(uintptr_t)&unsupported, &stats);
+
+    bool unsupported_pass =
+        decoded &&
+        !stats.failed &&
+        stats.total_records == 2 &&
+        stats.unsupported_records == 1;
+
+    fprintf(stderr,
+            "[GLES-DISPATCH] UNSUPPORTED: %s\n",
+            unsupported_pass ? "PASS" : "FAIL");
+
+    /*
+     * Recognized clear with invalid payload must stop
+     * execution immediately.
+     */
+    struct {
+        EndRecord clear;
+        EndRecord end;
+    } invalid = {0};
+
+    invalid.clear.op = CMD_CLEAR_COLOR;
+    invalid.clear.size = sizeof(EndRecord);
+    invalid.clear.x[0] = 0;
+    invalid.clear.x[2] = 0xF;
+    invalid.clear.x[5] = 0;
+
+    invalid.end.op = CMD_END;
+    invalid.end.size = sizeof(EndRecord);
+
+    GlesExecStats failed_stats = {0};
+
+    bool executed = gles_execute_test_command_list(
+        (uint64_t)(uintptr_t)&invalid, &failed_stats);
+
+    bool failure_pass =
+        !executed &&
+        failed_stats.failed &&
+        failed_stats.total_records == 1 &&
+        failed_stats.op_counts[CMD_END] == 0;
+
+    fprintf(stderr,
+            "[GLES-DISPATCH] FAIL-FAST: %s\n",
+            failure_pass ? "PASS" : "FAIL");
+}

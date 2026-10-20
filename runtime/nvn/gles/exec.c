@@ -29,7 +29,14 @@ typedef struct {
     bool failed;
 } GlesExecStats;
 
-typedef bool (*GlesCommandHandler)(const CmdRec *record);
+typedef enum {
+    GLES_COMMAND_UNSUPPORTED = 0,
+    GLES_COMMAND_SUCCESS = 1,
+    GLES_COMMAND_FAILED = -1
+} GlesCommandResult;
+
+typedef GlesCommandResult (*GlesCommandHandler)(
+    const CmdRec *record);
 
 static bool gles_exec_list(
     uint64_t handle,
@@ -112,9 +119,18 @@ static bool gles_exec_list(
              * A decoded command is not a supported command.
              * No GPU operation is performed here.
              */
-            if (handler && handler(r)) {
-                break;
+            if (handler) {
+                GlesCommandResult result = handler(r);
+
+                if (result == GLES_COMMAND_SUCCESS)
+                    break;
+
+                if (result == GLES_COMMAND_FAILED) {
+                    stats->failed = true;
+                    return false;
+                }
             }
+
             stats->unsupported_records++;
             break;
         }
@@ -177,12 +193,15 @@ void gles_print_command_stats(const GlesExecStats *stats)
 }
 extern bool gles_execute_clear_color(const CmdRec *record);
 
-static bool gles_clear_handler(const CmdRec *record)
+static GlesCommandResult gles_clear_handler(
+    const CmdRec *record)
 {
     if (record->op != CMD_CLEAR_COLOR)
-        return false;
+        return GLES_COMMAND_UNSUPPORTED;
 
-    return gles_execute_clear_color(record);
+    return gles_execute_clear_color(record)
+        ? GLES_COMMAND_SUCCESS
+        : GLES_COMMAND_FAILED;
 }
 
 bool gles_execute_test_command_list(
