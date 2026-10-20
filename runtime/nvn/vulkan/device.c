@@ -1,6 +1,9 @@
 // Vulkan device, window, swapchain and presentation (counterpart of the window/present half of metal.m).
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#ifdef __ANDROID__
+#include <GLES3/gl3.h>
+#endif
 #include <math.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -804,7 +807,112 @@ static void quick_exit_handler(void) {
 #endif
 }
 
+#ifdef __ANDROID__
+static void las_gles_window_probe(void) {
+    LOG("[gles-probe] starting dedicated game-window probe\n");
+
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        FATAL("[gles-probe] SDL_Init: %s\n", SDL_GetError());
+    }
+
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+
+    SDL_Window *probe_window = SDL_CreateWindow(
+        "LAS Recomp GLES Probe",
+        1280,
+        720,
+        SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN
+    );
+
+    if (!probe_window) {
+        FATAL("[gles-probe] SDL_CreateWindow: %s\n", SDL_GetError());
+    }
+
+    SDL_GLContext probe_context = SDL_GL_CreateContext(probe_window);
+
+    if (!probe_context) {
+        FATAL("[gles-probe] SDL_GL_CreateContext: %s\n", SDL_GetError());
+    }
+
+    if (!SDL_GL_MakeCurrent(probe_window, probe_context)) {
+        FATAL("[gles-probe] SDL_GL_MakeCurrent: %s\n", SDL_GetError());
+    }
+
+    const char *version = (const char *)glGetString(GL_VERSION);
+    const char *renderer = (const char *)glGetString(GL_RENDERER);
+
+    LOG("[gles-probe] GL_VERSION=%s\n", version ? version : "unknown");
+    LOG("[gles-probe] GL_RENDERER=%s\n", renderer ? renderer : "unknown");
+
+    LOG("[gles-probe] entering persistent frame loop\n");
+
+    SDL_GL_SetSwapInterval(1);
+
+    for (int frame = 0; frame < 180; frame++) {
+        SDL_Event event;
+
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT) {
+                LOG("[gles-probe] quit requested\n");
+                break;
+            }
+        }
+
+        int width = 0;
+        int height = 0;
+        SDL_GetWindowSizeInPixels(probe_window, &width, &height);
+
+        glViewport(0, 0, width, height);
+
+        float pulse = (float)(frame % 60) / 60.0f;
+
+        glClearColor(
+            0.08f,
+            0.12f + pulse * 0.15f,
+            0.18f,
+            1.0f
+        );
+
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        SDL_GL_SwapWindow(probe_window);
+
+        GLenum error = glGetError();
+
+        if (error != GL_NO_ERROR) {
+            LOG("[gles-probe] GL error frame=%d code=0x%x\n", frame, error);
+        }
+
+        if (frame % 30 == 0) {
+            LOG("[gles-probe] frame=%d size=%dx%d\n", frame, width, height);
+        }
+
+        SDL_Delay(16);
+    }
+
+    LOG("[gles-probe] persistent frame loop completed\n");
+
+    SDL_GL_DestroyContext(probe_context);
+    SDL_DestroyWindow(probe_window);
+
+    LOG("[gles-probe] completed; Vulkan backend unchanged\n");
+
+    fflush(stdout);
+    fflush(stderr);
+    exit(0);
+}
+#endif
 void ui_window_init(void) {
+#ifdef __ANDROID__
+    if (getenv("LARECOMP_GLES_WINDOW_PROBE") ||
+        access("/sdcard/Android/data/com.lasrecomp.android/files/gles-window-probe", F_OK) == 0) {
+        las_gles_window_probe();
+    }
+#endif
     if (window) return;
     atexit(quick_exit_handler);
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
