@@ -29,10 +29,13 @@ typedef struct {
     bool failed;
 } GlesExecStats;
 
+typedef bool (*GlesCommandHandler)(const CmdRec *record);
+
 static bool gles_exec_list(
     uint64_t handle,
     unsigned depth,
-    GlesExecStats *stats)
+    GlesExecStats *stats,
+    GlesCommandHandler handler)
 {
     uint64_t p = handle;
 
@@ -97,7 +100,7 @@ static bool gles_exec_list(
                 (const uint64_t *)r->extra;
 
             for (uint64_t i = 0; i < count; i++) {
-                if (!gles_exec_list(handles[i], depth + 1, stats))
+                if (!gles_exec_list(handles[i], depth + 1, stats, handler))
                     return false;
             }
 
@@ -109,6 +112,9 @@ static bool gles_exec_list(
              * A decoded command is not a supported command.
              * No GPU operation is performed here.
              */
+            if (handler && handler(r)) {
+                break;
+            }
             stats->unsupported_records++;
             break;
         }
@@ -137,7 +143,7 @@ bool gles_decode_command_list(
     out->remaining_records = GLES_EXEC_MAX_RECORDS;
     out->remaining_calls = GLES_EXEC_MAX_CALLS;
 
-    bool ok = gles_exec_list(handle, 0, out);
+    bool ok = gles_exec_list(handle, 0, out, NULL);
 
     out->failed = !ok;
     return ok;
@@ -168,4 +174,32 @@ void gles_print_command_stats(const GlesExecStats *stats)
                     (unsigned long long)stats->op_counts[i]);
         }
     }
+}
+extern bool gles_execute_clear_color(const CmdRec *record);
+
+static bool gles_clear_handler(const CmdRec *record)
+{
+    if (record->op != CMD_CLEAR_COLOR)
+        return false;
+
+    return gles_execute_clear_color(record);
+}
+
+bool gles_execute_test_command_list(
+    uint64_t handle,
+    GlesExecStats *out)
+{
+    if (!out)
+        return false;
+
+    memset(out, 0, sizeof(*out));
+
+    out->remaining_records = GLES_EXEC_MAX_RECORDS;
+    out->remaining_calls = GLES_EXEC_MAX_CALLS;
+
+    bool ok = gles_exec_list(handle, 0, out,
+                             gles_clear_handler);
+
+    out->failed = !ok;
+    return ok;
 }
