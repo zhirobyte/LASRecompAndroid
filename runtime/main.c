@@ -1,3 +1,4 @@
+#include "nvn/backend_select.h"
 // LAS Recomp entry: load modules, set up the kernel, run nn::init::Start on the main thread.
 #include <SDL3/SDL.h>
 #ifdef __ANDROID__
@@ -177,6 +178,7 @@ int main(int argc, char **argv) {
         else if (argv[i][0] != '-' && !realpath(argv[i], arg_root)) root = argv[i];  // (relative to where we started)
         else if (argv[i][0] != '-') root = arg_root;
     }
+    LOG("[backend] selected: %s\n", nvn_backend_name());
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
     for (bool title = !skip_launcher;;) {
         if (title) {  // start screen (runtime/ui/launcher.mm): game files setup, seed choice, settings
