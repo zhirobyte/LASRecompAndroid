@@ -1101,6 +1101,7 @@ static void prelaunch_tab(float sc) {
 extern "C" void gles_probe_context(void);
 extern "C" void gles_test_framebuffer(void);
 extern "C" void gles_run_decoder_selftest(void);
+extern "C" void gles_run_clear_selftest(void);
 
 extern "C" void launcher_run(const char *root) {
     g_root = root;
@@ -1159,6 +1160,7 @@ extern "C" void launcher_run(const char *root) {
     gles_probe_context();
     gles_test_framebuffer();
     gles_run_decoder_selftest();
+    gles_run_clear_selftest();
 #else
     ui_window_init();
     SDL_Window *win = ui_window();
