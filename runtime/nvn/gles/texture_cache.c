@@ -252,3 +252,27 @@ size_t gles_texture_cache_release_pool(
 
     return released;
 }
+bool gles_texture_cache_release_identity(
+    GlesTextureCache *cache,
+    GlesObjectIdentity identity
+) {
+    if (!cache || !identity.pointer || !identity.generation)
+        return false;
+
+    for (size_t i = 0; i < GLES_TEXTURE_CACHE_CAPACITY; i++) {
+        GlesTextureCacheEntry *entry = &cache->entries[i];
+
+        if (entry->texture != identity.pointer ||
+            entry->identity.pointer != identity.pointer ||
+            entry->identity.generation != identity.generation)
+            continue;
+
+        if (entry->name)
+            glDeleteTextures(1, &entry->name);
+
+        memset(entry, 0, sizeof(*entry));
+        return true;
+    }
+
+    return false;
+}

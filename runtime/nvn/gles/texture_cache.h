@@ -6,11 +6,13 @@
 #include <GLES3/gl3.h>
 
 #include "../nvn.h"
+#include "identity.h"
 
 #define GLES_TEXTURE_CACHE_CAPACITY 32
 
 typedef struct {
     const NvnTexture *texture;
+    GlesObjectIdentity identity;
     const NvnPool *pool_identity;
     uint64_t guest_addr;
     uint64_t guest_size;
@@ -61,4 +63,13 @@ size_t gles_texture_cache_invalidate_range(
 size_t gles_texture_cache_release_pool(
     GlesTextureCache *cache,
     const NvnPool *pool
+);
+/*
+ * Generation-aware retirement.
+ * Must run on the owning GLES context thread.
+ * Never dereferences identity.pointer.
+ */
+bool gles_texture_cache_release_identity(
+    GlesTextureCache *cache,
+    GlesObjectIdentity identity
 );

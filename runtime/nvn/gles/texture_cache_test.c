@@ -424,14 +424,66 @@ static bool run_range_test(void)
            overlap && empty && both &&
            retired && retired_again;
 }
+
+static bool run_identity_retirement_test(void)
+{
+    GlesTextureCache cache;
+    GlesIdentityRegistry registry;
+
+    gles_texture_cache_init(&cache);
+    gles_identity_init(&registry);
+
+    NvnTexture texture = {0};
+
+    GlesObjectIdentity old_id = {0};
+    GlesObjectIdentity new_id = {0};
+
+    if (!gles_identity_register(&registry, &texture, &old_id))
+        return false;
+
+    cache.entries[0].texture = &texture;
+    cache.entries[0].identity = old_id;
+
+    bool old_released =
+        gles_texture_cache_release_identity(&cache, old_id) &&
+        cache.entries[0].texture == NULL;
+
+    bool retired = gles_identity_retire(&registry, old_id);
+
+    bool reused =
+        gles_identity_register(&registry, &texture, &new_id);
+
+    cache.entries[0].texture = &texture;
+    cache.entries[0].identity = new_id;
+
+    bool stale_rejected =
+        !gles_texture_cache_release_identity(&cache, old_id) &&
+        cache.entries[0].texture == &texture &&
+        cache.entries[0].identity.generation == new_id.generation;
+
+    bool new_released =
+        gles_texture_cache_release_identity(&cache, new_id) &&
+        cache.entries[0].texture == NULL;
+
+    bool ok =
+        old_released && retired && reused &&
+        stale_rejected && new_released;
+
+    fprintf(stderr,
+            "[GLES-CACHE-IDENTITY] ABA RETIREMENT: %s\n",
+            ok ? "PASS" : "FAIL");
+
+    return ok;
+}
 void gles_run_texture_cache_selftest(void)
 {
     bool lifecycle = run_test();
     bool ranges = run_range_test();
+    bool identities = run_identity_retirement_test();
 
     fprintf(stderr, "[GLES-CACHE-RANGE] RESULT: %s\n",
             ranges ? "PASS" : "FAIL");
 
     fprintf(stderr, "[GLES-CACHE] RESULT: %s\n",
-            lifecycle && ranges ? "PASS" : "FAIL");
+            lifecycle && ranges && identities ? "PASS" : "FAIL");
 }
