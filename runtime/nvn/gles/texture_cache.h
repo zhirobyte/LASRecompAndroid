@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -46,3 +46,10 @@ void gles_texture_cache_release(
 );
 
 void gles_texture_cache_reset(GlesTextureCache *cache);
+
+/* Mark textures overlapping [addr, addr + size) as dirty. */
+size_t gles_texture_cache_invalidate_range(
+    GlesTextureCache *cache,
+    uint64_t addr,
+    uint64_t size
+);

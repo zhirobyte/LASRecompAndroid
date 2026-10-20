@@ -1,4 +1,4 @@
-﻿#include <stdbool.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -262,8 +262,144 @@ cleanup:
     return ok;
 }
 
+static bool run_range_test(void)
+{
+    GlesTextureCache cache;
+    gles_texture_cache_init(&cache);
+
+    /*
+     * These are metadata-only synthetic entries.
+     * No GL objects are created or deleted.
+     */
+    NvnTexture a = {0};
+    NvnTexture b = {0};
+    NvnPool pool = {0};
+
+    const FormatInfo *fmt = nvn_format_info(0x25);
+
+    if (!fmt)
+        return false;
+
+    a.width = b.width = 4;
+    a.height = b.height = 4;
+    a.depth = b.depth = 1;
+
+    a.layout.width = b.layout.width = 4;
+    a.layout.height = b.layout.height = 4;
+    a.layout.depth = b.layout.depth = 1;
+    a.layout.layers = b.layout.layers = 1;
+    a.layout.levels = b.layout.levels = 1;
+    a.layout.fmt = b.layout.fmt = fmt;
+
+    tegra_layout_init(&a.layout);
+    tegra_layout_init(&b.layout);
+
+    uint64_t size = tegra_total_size(&a.layout);
+
+    if (!size || size > 4096)
+        return false;
+
+    /*
+     * Fake addresses are safe here because the range
+     * invalidator only compares addresses.
+     */
+    pool.storage = 0x100000;
+    pool.size = 0x10000;
+
+    a.pool = &pool;
+    b.pool = &pool;
+
+    a.addr = pool.storage + 0x1000;
+    b.addr = pool.storage + 0x4000;
+
+    cache.entries[0].texture = &a;
+    cache.entries[1].texture = &b;
+
+    size_t count = gles_texture_cache_invalidate_range(
+        &cache, a.addr, 1
+    );
+
+    bool direct =
+        count == 1 &&
+        cache.entries[0].dirty &&
+        !cache.entries[1].dirty;
+
+    fprintf(stderr, "[GLES-CACHE-RANGE] DIRECT: %s\n",
+            direct ? "PASS" : "FAIL");
+
+    cache.entries[0].dirty = false;
+
+    count = gles_texture_cache_invalidate_range(
+        &cache, a.addr + size, 1
+    );
+
+    bool boundary =
+        count == 0 &&
+        !cache.entries[0].dirty &&
+        !cache.entries[1].dirty;
+
+    fprintf(stderr, "[GLES-CACHE-RANGE] BOUNDARY: %s\n",
+            boundary ? "PASS" : "FAIL");
+
+    count = gles_texture_cache_invalidate_range(
+        &cache, a.addr - 1, 1
+    );
+
+    bool before =
+        count == 0 &&
+        !cache.entries[0].dirty;
+
+    fprintf(stderr, "[GLES-CACHE-RANGE] BEFORE: %s\n",
+            before ? "PASS" : "FAIL");
+
+    count = gles_texture_cache_invalidate_range(
+        &cache, a.addr - 1, 2
+    );
+
+    bool overlap =
+        count == 1 &&
+        cache.entries[0].dirty &&
+        !cache.entries[1].dirty;
+
+    fprintf(stderr, "[GLES-CACHE-RANGE] OVERLAP: %s\n",
+            overlap ? "PASS" : "FAIL");
+
+    cache.entries[0].dirty = false;
+
+    count = gles_texture_cache_invalidate_range(
+        &cache, a.addr, 0
+    );
+
+    bool empty =
+        count == 0 &&
+        !cache.entries[0].dirty;
+
+    fprintf(stderr, "[GLES-CACHE-RANGE] EMPTY: %s\n",
+            empty ? "PASS" : "FAIL");
+
+    count = gles_texture_cache_invalidate_range(
+        &cache, a.addr, b.addr - a.addr + 1
+    );
+
+    bool both =
+        count == 2 &&
+        cache.entries[0].dirty &&
+        cache.entries[1].dirty;
+
+    fprintf(stderr, "[GLES-CACHE-RANGE] BOTH: %s\n",
+            both ? "PASS" : "FAIL");
+
+    return direct && boundary && before &&
+           overlap && empty && both;
+}
 void gles_run_texture_cache_selftest(void)
 {
+    bool lifecycle = run_test();
+    bool ranges = run_range_test();
+
+    fprintf(stderr, "[GLES-CACHE-RANGE] RESULT: %s\n",
+            ranges ? "PASS" : "FAIL");
+
     fprintf(stderr, "[GLES-CACHE] RESULT: %s\n",
-            run_test() ? "PASS" : "FAIL");
+            lifecycle && ranges ? "PASS" : "FAIL");
 }

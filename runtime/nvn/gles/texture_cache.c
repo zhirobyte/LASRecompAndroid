@@ -1,5 +1,6 @@
-﻿#include "texture_cache.h"
+#include "texture_cache.h"
 #include "texture_manager.h"
+#include "../tegra.h"
 
 #include <string.h>
 
@@ -163,4 +164,56 @@ void gles_texture_cache_reset(GlesTextureCache *cache)
     }
 
     memset(cache, 0, sizeof(*cache));
+}
+
+/*
+ * Range invalidation only updates cache metadata.
+ * No GL context is needed for this operation.
+ *
+ * Caller must serialize access to the cache when
+ * multiple threads can use it.
+ */
+size_t gles_texture_cache_invalidate_range(
+    GlesTextureCache *cache,
+    uint64_t addr,
+    uint64_t size
+) {
+    if (!cache || !size)
+        return 0;
+
+    size_t count = 0;
+
+    for (size_t i = 0; i < GLES_TEXTURE_CACHE_CAPACITY; i++) {
+        GlesTextureCacheEntry *entry = &cache->entries[i];
+        const NvnTexture *t = entry->texture;
+
+        if (!t || !t->pool || !t->addr)
+            continue;
+
+        uint64_t texture_size = tegra_total_size(&t->layout);
+
+        if (!texture_size)
+            continue;
+
+        /*
+         * Half-open ranges:
+         * [addr, addr + size)
+         * [t->addr, t->addr + texture_size)
+         *
+         * Subtraction avoids integer overflow.
+         */
+        bool overlap;
+
+        if (addr >= t->addr)
+            overlap = addr - t->addr < texture_size;
+        else
+            overlap = t->addr - addr < size;
+
+        if (overlap) {
+            entry->dirty = true;
+            count++;
+        }
+    }
+
+    return count;
 }
