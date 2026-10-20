@@ -192,16 +192,22 @@ void gles_print_command_stats(const GlesExecStats *stats)
     }
 }
 extern bool gles_execute_clear_color(const CmdRec *record);
+extern bool gles_execute_set_render_targets(const CmdRec *record);
 
 static GlesCommandResult gles_clear_handler(
     const CmdRec *record)
 {
-    if (record->op != CMD_CLEAR_COLOR)
-        return GLES_COMMAND_UNSUPPORTED;
+    if (record->op == CMD_SET_RENDER_TARGETS)
+        return gles_execute_set_render_targets(record)
+            ? GLES_COMMAND_SUCCESS
+            : GLES_COMMAND_FAILED;
 
-    return gles_execute_clear_color(record)
-        ? GLES_COMMAND_SUCCESS
-        : GLES_COMMAND_FAILED;
+    if (record->op == CMD_CLEAR_COLOR)
+        return gles_execute_clear_color(record)
+            ? GLES_COMMAND_SUCCESS
+            : GLES_COMMAND_FAILED;
+
+    return GLES_COMMAND_UNSUPPORTED;
 }
 
 bool gles_execute_test_command_list(
