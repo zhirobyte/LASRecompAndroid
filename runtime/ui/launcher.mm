@@ -1106,6 +1106,7 @@ extern "C" void gles_run_dispatch_selftest(void);
 extern "C" void gles_run_dispatch_failure_tests(void);
 extern "C" void gles_run_render_target_selftest(void);
 extern "C" void gles_run_render_target_switch_selftest(void);
+extern "C" void gles_run_texture_upload_selftest(void);
 
 extern "C" void launcher_run(const char *root) {
     g_root = root;
@@ -1169,6 +1170,7 @@ extern "C" void launcher_run(const char *root) {
     gles_run_dispatch_failure_tests();
     gles_run_render_target_selftest();
     gles_run_render_target_switch_selftest();
+    gles_run_texture_upload_selftest();
 #else
     ui_window_init();
     SDL_Window *win = ui_window();
