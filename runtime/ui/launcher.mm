@@ -1112,6 +1112,7 @@ extern "C" void gles_run_texture_cache_selftest(void);
 extern "C" void gles_run_lifecycle_selftest(void);
 extern "C" void gles_run_lifecycle_processor_selftest(void);
 extern "C" void gles_run_lifecycle_sync_selftest(void);
+extern "C" void gles_run_identity_selftest(void);
 
 extern "C" void launcher_run(const char *root) {
     g_root = root;
@@ -1181,6 +1182,7 @@ extern "C" void launcher_run(const char *root) {
     gles_run_lifecycle_selftest();
     gles_run_lifecycle_processor_selftest();
     gles_run_lifecycle_sync_selftest();
+    gles_run_identity_selftest();
 #else
     ui_window_init();
     SDL_Window *win = ui_window();
