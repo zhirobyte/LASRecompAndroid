@@ -313,7 +313,14 @@ static bool run_range_test(void)
     b.addr = pool.storage + 0x4000;
 
     cache.entries[0].texture = &a;
+    cache.entries[0].pool_identity = &pool;
+    cache.entries[0].guest_addr = a.addr;
+    cache.entries[0].guest_size = size;
+
     cache.entries[1].texture = &b;
+    cache.entries[1].pool_identity = &pool;
+    cache.entries[1].guest_addr = b.addr;
+    cache.entries[1].guest_size = size;
 
     size_t count = gles_texture_cache_invalidate_range(
         &cache, a.addr, 1
@@ -389,8 +396,33 @@ static bool run_range_test(void)
     fprintf(stderr, "[GLES-CACHE-RANGE] BOTH: %s\n",
             both ? "PASS" : "FAIL");
 
+    /*
+     * Synthetic entries have GL name zero, so this
+     * exercises identity retirement without GL allocation.
+     */
+    size_t released = gles_texture_cache_release_pool(
+        &cache, &pool
+    );
+
+    bool retired =
+        released == 2 &&
+        cache.entries[0].texture == NULL &&
+        cache.entries[1].texture == NULL &&
+        cache.entries[0].pool_identity == NULL &&
+        cache.entries[1].pool_identity == NULL;
+
+    fprintf(stderr, "[GLES-CACHE-RANGE] POOL RETIRE: %s\n",
+            retired ? "PASS" : "FAIL");
+
+    bool retired_again =
+        gles_texture_cache_release_pool(&cache, &pool) == 0;
+
+    fprintf(stderr, "[GLES-CACHE-RANGE] POOL RETIRE AGAIN: %s\n",
+            retired_again ? "PASS" : "FAIL");
+
     return direct && boundary && before &&
-           overlap && empty && both;
+           overlap && empty && both &&
+           retired && retired_again;
 }
 void gles_run_texture_cache_selftest(void)
 {

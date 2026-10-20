@@ -73,6 +73,9 @@ bool gles_texture_cache_get(
         return false;
 
     entry->texture = texture;
+    entry->pool_identity = texture->pool;
+    entry->guest_addr = texture->addr;
+    entry->guest_size = tegra_total_size(&texture->layout);
     entry->name = name;
     entry->dirty = false;
 
@@ -122,6 +125,9 @@ bool gles_texture_cache_refresh(
     GLuint old_name = entry->name;
 
     entry->name = replacement;
+    entry->pool_identity = texture->pool;
+    entry->guest_addr = texture->addr;
+    entry->guest_size = tegra_total_size(&texture->layout);
     entry->dirty = false;
 
     if (old_name)
@@ -185,15 +191,12 @@ size_t gles_texture_cache_invalidate_range(
 
     for (size_t i = 0; i < GLES_TEXTURE_CACHE_CAPACITY; i++) {
         GlesTextureCacheEntry *entry = &cache->entries[i];
-        const NvnTexture *t = entry->texture;
-
-        if (!t || !t->pool || !t->addr)
+        if (!entry->texture || !entry->pool_identity ||
+            !entry->guest_addr || !entry->guest_size)
             continue;
 
-        uint64_t texture_size = tegra_total_size(&t->layout);
-
-        if (!texture_size)
-            continue;
+        uint64_t texture_size = entry->guest_size;
+        uint64_t texture_addr = entry->guest_addr;
 
         /*
          * Half-open ranges:
@@ -204,10 +207,10 @@ size_t gles_texture_cache_invalidate_range(
          */
         bool overlap;
 
-        if (addr >= t->addr)
-            overlap = addr - t->addr < texture_size;
+        if (addr >= texture_addr)
+            overlap = addr - texture_addr < texture_size;
         else
-            overlap = t->addr - addr < size;
+            overlap = texture_addr - addr < size;
 
         if (overlap) {
             entry->dirty = true;
@@ -216,4 +219,36 @@ size_t gles_texture_cache_invalidate_range(
     }
 
     return count;
+}
+
+/*
+ * Retire all cached textures belonging to a pool.
+ * Compares saved pointer identities only; never dereferences
+ * the potentially finalized pool or texture.
+ *
+ * Requires the owning GLES context to be current.
+ */
+size_t gles_texture_cache_release_pool(
+    GlesTextureCache *cache,
+    const NvnPool *pool
+) {
+    if (!cache || !pool)
+        return 0;
+
+    size_t released = 0;
+
+    for (size_t i = 0; i < GLES_TEXTURE_CACHE_CAPACITY; i++) {
+        GlesTextureCacheEntry *entry = &cache->entries[i];
+
+        if (!entry->texture || entry->pool_identity != pool)
+            continue;
+
+        if (entry->name)
+            glDeleteTextures(1, &entry->name);
+
+        memset(entry, 0, sizeof(*entry));
+        released++;
+    }
+
+    return released;
 }

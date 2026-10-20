@@ -11,6 +11,9 @@
 
 typedef struct {
     const NvnTexture *texture;
+    const NvnPool *pool_identity;
+    uint64_t guest_addr;
+    uint64_t guest_size;
     GLuint name;
     bool dirty;
 } GlesTextureCacheEntry;
@@ -52,4 +55,10 @@ size_t gles_texture_cache_invalidate_range(
     GlesTextureCache *cache,
     uint64_t addr,
     uint64_t size
+);
+
+/* Must be called with the owning GLES context current. */
+size_t gles_texture_cache_release_pool(
+    GlesTextureCache *cache,
+    const NvnPool *pool
 );
