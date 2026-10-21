@@ -572,6 +572,48 @@ void vk_gpuprof_report(void) {
     gp_n = 0;
 }
 
+// H1-15N: isolated Vulkan 1.1 queue-submission primitive.
+// This is deliberately NOT wired into the production submission ring: that ring
+// depends on timeline semaphores, synchronization2, and Vulkan 1.3 rendering.
+// The caller owns command buffers, semaphores and fence lifetimes. The fence
+// must be unsignaled when supplied; this function does not wait or reset it.
+// H1-15O: explicit device dispatch keeps probe and production Vulkan devices isolated.
+VkResult vk_h1_legacy_submit_with_dispatch(PFN_vkQueueSubmit submit_fn,
+                             VkQueue queue, const VkCommandBuffer *buffers,
+                             uint32_t buffer_count, VkSemaphore wait_binary,
+                             VkPipelineStageFlags wait_stage,
+                             VkSemaphore signal_binary, VkFence fence) {
+    if (!submit_fn) return VK_ERROR_INITIALIZATION_FAILED;
+    if (queue == VK_NULL_HANDLE || buffers == NULL || buffer_count == 0)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    for (uint32_t i = 0; i < buffer_count; ++i)
+        if (buffers[i] == VK_NULL_HANDLE) return VK_ERROR_INITIALIZATION_FAILED;
+    if (wait_binary != VK_NULL_HANDLE && wait_stage == 0)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    VkSubmitInfo info = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                         .commandBufferCount = buffer_count,
+                         .pCommandBuffers = buffers};
+    if (wait_binary != VK_NULL_HANDLE) {
+        info.waitSemaphoreCount = 1;
+        info.pWaitSemaphores = &wait_binary;
+        info.pWaitDstStageMask = &wait_stage;
+    }
+    if (signal_binary != VK_NULL_HANDLE) {
+        info.signalSemaphoreCount = 1;
+        info.pSignalSemaphores = &signal_binary;
+    }
+    return submit_fn(queue, 1, &info, fence);
+}
+
+// Retain the original H1-15N production-dispatch API.
+VkResult vk_h1_legacy_submit(VkQueue queue, const VkCommandBuffer *buffers,
+                             uint32_t buffer_count, VkSemaphore wait_binary,
+                             VkPipelineStageFlags wait_stage,
+                             VkSemaphore signal_binary, VkFence fence) {
+    return vk_h1_legacy_submit_with_dispatch(vkQueueSubmit, queue, buffers,
+               buffer_count, wait_binary, wait_stage, signal_binary, fence);
+}
+
 // Submit the pending work (if any). wait/signal: binary semaphores for presentation (may be null).
 void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra) {
     (void)extra;

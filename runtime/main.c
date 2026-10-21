@@ -165,6 +165,10 @@ static void boot(const char *root) {
 
 int main(int argc, char **argv) {
     plat_init();
+#ifdef __ANDROID__
+    extern void h1_probe_vulkan_11(void);
+    h1_probe_vulkan_11();
+#endif
 #ifdef _WIN32
     setvbuf(stderr, NULL, _IONBF, 0);  // the Windows CRT treats _IOLBF as full buffering
 #else

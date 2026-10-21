@@ -3,6 +3,7 @@
 // A command handle is the guest address of a list's first record.
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "nvn.h"
 #ifdef __ANDROID__
@@ -696,9 +697,49 @@ NVN(nvnCommandBufferDiscardColor) {
 }
 NVN(nvnCommandBufferDiscardDepthStencil) { (void)c; }
 
+// H1-15Q: bounded, metadata-only trace of guest NVN draw entry points.
+// Counts are process-wide and atomic; no guest pointers or asset bytes are logged.
+static atomic_uint h1_15q_draw_seen = ATOMIC_VAR_INIT(0);
+static void h1_15q_draw_trace(const char *kind, const Cpu *c) {
+    unsigned n = atomic_fetch_add_explicit(&h1_15q_draw_seen, 1u, memory_order_relaxed);
+    if (n >= 32u) return;
+    LOG("[h1-15q] draw ordinal=%u kind=%s primitive=%llu arg2=%llu arg3=%llu arg4=%llu\n",
+        n + 1u, kind, (unsigned long long)c->x[1],
+        (unsigned long long)c->x[2], (unsigned long long)c->x[3],
+        (unsigned long long)c->x[4]);
+}
+
+// H1-15R: verify the actual recorded indexed-draw ABI without reading guest
+// index data or submitting it to a GPU. This is a translation checkpoint,
+// not a Vulkan draw. The production executor uses the same CmdRec x[] layout.
+static atomic_uint h1_15r_record_seen = ATOMIC_VAR_INIT(0);
+static void h1_15r_recorded_indexed(const CmdRec *r) {
+    unsigned ordinal = atomic_fetch_add_explicit(&h1_15r_record_seen, 1u,
+                                                  memory_order_relaxed);
+    if (ordinal >= 32u) return;
+    uint32_t index_type = (uint32_t)r->x[1];
+    uint64_t count = r->x[2];
+    uint64_t index_addr = r->x[3];
+    uint32_t index_bytes = index_type == 1u ? 2u :
+                           index_type == 2u ? 4u : 0u;
+    bool size_ok = index_bytes && count <= UINT64_MAX / index_bytes;
+    uint64_t required_bytes = size_ok ? count * index_bytes : 0u;
+    bool aligned = index_bytes && (index_addr % index_bytes) == 0u;
+    bool valid = r->op == CMD_DRAW_ELEMENTS && index_addr && count &&
+                 size_ok && aligned && count <= UINT32_MAX &&
+                 r->x[6] > 0 && r->x[6] <= UINT32_MAX;
+    LOG("[h1-15r] indexed_record ordinal=%u op=%u primitive=%llu "
+        "index_type=%u count=%llu bytes=%llu base_vertex=%d "
+        "base_instance=%llu instances=%llu aligned=%u valid=%u\n",
+        ordinal + 1u, r->op, (unsigned long long)r->x[0], index_type,
+        (unsigned long long)count, (unsigned long long)required_bytes,
+        (int32_t)r->x[4], (unsigned long long)r->x[5],
+        (unsigned long long)r->x[6], aligned ? 1u : 0u, valid ? 1u : 0u);
+}
+
 // ---- draws (all integer arguments fit in x1..x7)
-NVN(nvnCommandBufferDrawArrays) { Snap s = snap(c); CmdRec *r = record(c, CMD_DRAW_ARRAYS, 0, &s); r->x[3] = 0; r->x[4] = 1; }
-NVN(nvnCommandBufferDrawArraysInstanced) { Snap s = snap(c); record(c, CMD_DRAW_ARRAYS, 0, &s); }
+NVN(nvnCommandBufferDrawArrays) { h1_15q_draw_trace("arrays", c); Snap s = snap(c); CmdRec *r = record(c, CMD_DRAW_ARRAYS, 0, &s); r->x[3] = 0; r->x[4] = 1; }
+NVN(nvnCommandBufferDrawArraysInstanced) { h1_15q_draw_trace("arrays_instanced", c); Snap s = snap(c); record(c, CMD_DRAW_ARRAYS, 0, &s); }
 // Debug: LARECOMP_TRACE_COUNT=<n> logs the guest call chain of indexed draws with n indices.
 static void trace_draw(Cpu *c, uint64_t count) {
     static long want = -2;
@@ -718,18 +759,22 @@ static void trace_draw(Cpu *c, uint64_t count) {
 }
 
 NVN(nvnCommandBufferDrawElements) {
+    h1_15q_draw_trace("nvnCommandBufferDrawElements", c);
     trace_draw(c, c->x[3]);
     Snap s = snap(c);
     CmdRec *r = record(c, CMD_DRAW_ELEMENTS, 0, &s);
     r->x[4] = 0; r->x[5] = 0; r->x[6] = 1;  // base vertex, base instance, instances
+    h1_15r_recorded_indexed(r);
 }
 NVN(nvnCommandBufferDrawElementsBaseVertex) {
+    h1_15q_draw_trace("nvnCommandBufferDrawElementsBaseVertex", c);
     trace_draw(c, c->x[3]);
     Snap s = snap(c);
     CmdRec *r = record(c, CMD_DRAW_ELEMENTS, 0, &s);
     r->x[5] = 0; r->x[6] = 1;
+    h1_15r_recorded_indexed(r);
 }
-NVN(nvnCommandBufferDrawElementsInstanced) { trace_draw(c, c->x[3]); Snap s = snap(c); record(c, CMD_DRAW_ELEMENTS, 0, &s); }
+NVN(nvnCommandBufferDrawElementsInstanced) { h1_15q_draw_trace("elements_instanced", c); trace_draw(c, c->x[3]); Snap s = snap(c); CmdRec *r = record(c, CMD_DRAW_ELEMENTS, 0, &s); h1_15r_recorded_indexed(r); }
 PLAIN(nvnCommandBufferDrawArraysIndirect, CMD_DRAW_ARRAYS_INDIRECT)
 PLAIN(nvnCommandBufferDrawElementsIndirect, CMD_DRAW_ELEMENTS_INDIRECT)
 NVN(nvnCommandBufferMultiDrawArraysIndirectCount) { (void)c; }

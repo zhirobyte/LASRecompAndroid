@@ -82,6 +82,10 @@ typedef struct NvnWindow {
 
 typedef struct NvnSync {
     volatile int signaled;
+#ifdef __ANDROID__
+    // Explicitly completed window-acquire event, not a GPU fence.
+    volatile int gles_acquire_ready;
+#endif
     volatile uint64_t seq;  // GPU submission this fence belongs to (renderer_fence_seq), 0 = none
 #ifdef __ANDROID__
     volatile uint64_t lseq;  // (LARECOMP_VK_ASYNC) the render thread's request that sets seq: wait for it first

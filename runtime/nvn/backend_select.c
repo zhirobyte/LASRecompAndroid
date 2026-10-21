@@ -23,6 +23,14 @@ static NvnBackendKind detect_backend(void) {
         return NVN_BACKEND_GLES_EXPERIMENTAL;
     }
 
+    const char *vk11_marker =
+        "/sdcard/Android/data/com.lasrecomp.android/files/"
+        "vulkan11-backend-experimental";
+
+    if (access(vk11_marker, F_OK) == 0) {
+        return NVN_BACKEND_VULKAN11_EXPERIMENTAL;
+    }
+
     const char *marker =
         "/sdcard/Android/data/com.lasrecomp.android/files/"
         "gles-backend-experimental";
@@ -59,7 +67,7 @@ NvnBackendKind nvn_backend_kind(void) {
 }
 
 const char *nvn_backend_name(void) {
-    return nvn_backend_kind() == NVN_BACKEND_GLES_EXPERIMENTAL
-        ? "gles-experimental"
-        : "vulkan";
+    NvnBackendKind kind = nvn_backend_kind();
+    if (kind == NVN_BACKEND_VULKAN11_EXPERIMENTAL) return "vulkan11-experimental";
+    return kind == NVN_BACKEND_GLES_EXPERIMENTAL ? "gles-experimental" : "vulkan";
 }

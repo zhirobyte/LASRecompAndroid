@@ -5,6 +5,7 @@
 #include <SDL3/SDL_vulkan.h>
 #ifdef __ANDROID__
 #include <GLES3/gl3.h>
+#include <dlfcn.h>
 #endif
 #include <math.h>
 #include <stdatomic.h>
@@ -50,6 +51,10 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 
 // LARECOMP_VK_VALIDATION=1: Khronos validation layer (MSYS2 package vulkan-validation-layers)
 static void create_instance(void) {
+    if (nvn_backend_kind() == NVN_BACKEND_VULKAN11_EXPERIMENTAL) {
+        FATAL("[h1-15i] Vulkan 1.1 experimental backend selected; "
+              "production renderer is not yet compatible (safe stop)\n");
+    }
 #ifdef __ANDROID__
     vk_android_load();
 #endif
@@ -1075,6 +1080,1074 @@ bool vk_driver_is_qualcomm(void) {
 }
 #endif
 
+#ifdef __ANDROID__
+#include "h1_compute_spirv.h"
+#include "h1_triangle_vert_spirv.h"
+#include "h1_triangle_frag_spirv.h"
+#include "h1_graphics_probe.h"
+
+/*
+ * H1-11: independent Vulkan 1.1 compute test.
+ * Returns VK_TRUE only when submitted GPU work is still pending.
+ * In that case all Vulkan objects must remain alive.
+ */
+static VkBool32 h1_probe_compute_11(
+    VkInstance instance,
+    VkPhysicalDevice physical,
+    VkDevice device,
+    uint32_t family,
+    PFN_vkGetInstanceProcAddr gipa,
+    PFN_vkGetDeviceProcAddr gdpa)
+{
+#define H1_LOAD(type, name) \
+    type name = (type)gdpa(device, #name)
+
+    H1_LOAD(PFN_vkCreateBuffer, vkCreateBuffer);
+    H1_LOAD(PFN_vkDestroyBuffer, vkDestroyBuffer);
+    H1_LOAD(PFN_vkGetBufferMemoryRequirements, vkGetBufferMemoryRequirements);
+    H1_LOAD(PFN_vkAllocateMemory, vkAllocateMemory);
+    H1_LOAD(PFN_vkFreeMemory, vkFreeMemory);
+    H1_LOAD(PFN_vkBindBufferMemory, vkBindBufferMemory);
+    H1_LOAD(PFN_vkMapMemory, vkMapMemory);
+    H1_LOAD(PFN_vkUnmapMemory, vkUnmapMemory);
+    H1_LOAD(PFN_vkInvalidateMappedMemoryRanges, vkInvalidateMappedMemoryRanges);
+    H1_LOAD(PFN_vkCreateShaderModule, vkCreateShaderModule);
+    H1_LOAD(PFN_vkDestroyShaderModule, vkDestroyShaderModule);
+    H1_LOAD(PFN_vkCreateDescriptorSetLayout, vkCreateDescriptorSetLayout);
+    H1_LOAD(PFN_vkDestroyDescriptorSetLayout, vkDestroyDescriptorSetLayout);
+    H1_LOAD(PFN_vkCreateDescriptorPool, vkCreateDescriptorPool);
+    H1_LOAD(PFN_vkDestroyDescriptorPool, vkDestroyDescriptorPool);
+    H1_LOAD(PFN_vkAllocateDescriptorSets, vkAllocateDescriptorSets);
+    H1_LOAD(PFN_vkUpdateDescriptorSets, vkUpdateDescriptorSets);
+    H1_LOAD(PFN_vkCreatePipelineLayout, vkCreatePipelineLayout);
+    H1_LOAD(PFN_vkDestroyPipelineLayout, vkDestroyPipelineLayout);
+    H1_LOAD(PFN_vkCreateComputePipelines, vkCreateComputePipelines);
+    H1_LOAD(PFN_vkDestroyPipeline, vkDestroyPipeline);
+    H1_LOAD(PFN_vkCreateCommandPool, vkCreateCommandPool);
+    H1_LOAD(PFN_vkDestroyCommandPool, vkDestroyCommandPool);
+    H1_LOAD(PFN_vkAllocateCommandBuffers, vkAllocateCommandBuffers);
+    H1_LOAD(PFN_vkBeginCommandBuffer, vkBeginCommandBuffer);
+    H1_LOAD(PFN_vkEndCommandBuffer, vkEndCommandBuffer);
+    H1_LOAD(PFN_vkCmdBindPipeline, vkCmdBindPipeline);
+    H1_LOAD(PFN_vkCmdBindDescriptorSets, vkCmdBindDescriptorSets);
+    H1_LOAD(PFN_vkCmdDispatch, vkCmdDispatch);
+    H1_LOAD(PFN_vkGetDeviceQueue, vkGetDeviceQueue);
+    H1_LOAD(PFN_vkQueueSubmit, vkQueueSubmit);
+    H1_LOAD(PFN_vkCreateFence, vkCreateFence);
+    H1_LOAD(PFN_vkDestroyFence, vkDestroyFence);
+    H1_LOAD(PFN_vkWaitForFences, vkWaitForFences);
+
+#undef H1_LOAD
+
+    PFN_vkGetPhysicalDeviceMemoryProperties memoryProperties =
+        (PFN_vkGetPhysicalDeviceMemoryProperties)
+        gipa(instance, "vkGetPhysicalDeviceMemoryProperties");
+
+    if (!memoryProperties ||
+        !vkCreateBuffer || !vkDestroyBuffer ||
+        !vkGetBufferMemoryRequirements ||
+        !vkAllocateMemory || !vkFreeMemory ||
+        !vkBindBufferMemory || !vkMapMemory ||
+        !vkUnmapMemory || !vkInvalidateMappedMemoryRanges ||
+        !vkCreateShaderModule || !vkDestroyShaderModule ||
+        !vkCreateDescriptorSetLayout || !vkDestroyDescriptorSetLayout ||
+        !vkCreateDescriptorPool || !vkDestroyDescriptorPool ||
+        !vkAllocateDescriptorSets || !vkUpdateDescriptorSets ||
+        !vkCreatePipelineLayout || !vkDestroyPipelineLayout ||
+        !vkCreateComputePipelines || !vkDestroyPipeline ||
+        !vkCreateCommandPool || !vkDestroyCommandPool ||
+        !vkAllocateCommandBuffers || !vkBeginCommandBuffer ||
+        !vkEndCommandBuffer || !vkCmdBindPipeline ||
+        !vkCmdBindDescriptorSets || !vkCmdDispatch ||
+        !vkGetDeviceQueue || !vkQueueSubmit ||
+        !vkCreateFence || !vkDestroyFence || !vkWaitForFences) {
+        LOG("[h1-vulkan-compute] missing entry point\n");
+        return VK_FALSE;
+    }
+
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkShaderModule shader = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkCommandPool commandPool = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+
+    VkBool32 pending = VK_FALSE;
+    VkBool32 coherent = VK_FALSE;
+    VkResult r;
+
+    LOG("[h1-vulkan-compute] starting\n");
+
+    VkBufferCreateInfo bufferInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = 256,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+
+    r = vkCreateBuffer(device, &bufferInfo, NULL, &buffer);
+    LOG("[h1-vulkan-compute] buffer_result=%d\n", r);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkMemoryRequirements requirements;
+    vkGetBufferMemoryRequirements(device, buffer, &requirements);
+
+    VkPhysicalDeviceMemoryProperties properties;
+    memoryProperties(physical, &properties);
+
+    uint32_t memoryIndex = UINT32_MAX;
+
+    for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
+        VkMemoryPropertyFlags flags = properties.memoryTypes[i].propertyFlags;
+
+        if ((requirements.memoryTypeBits & (1u << i)) &&
+            (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+            memoryIndex = i;
+            coherent = !!(flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            break;
+        }
+    }
+
+    if (memoryIndex == UINT32_MAX) {
+        LOG("[h1-vulkan-compute] no host-visible memory\n");
+        goto cleanup;
+    }
+
+    VkMemoryAllocateInfo memoryInfo = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = memoryIndex
+    };
+
+    r = vkAllocateMemory(device, &memoryInfo, NULL, &memory);
+    LOG("[h1-vulkan-compute] memory_result=%d\n", r);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    r = vkBindBufferMemory(device, buffer, memory, 0);
+    LOG("[h1-vulkan-compute] bind_result=%d\n", r);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkShaderModuleCreateInfo shaderInfo = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = sizeof(h1_compute_spirv),
+        .pCode = h1_compute_spirv
+    };
+
+    r = vkCreateShaderModule(device, &shaderInfo, NULL, &shader);
+    LOG("[h1-vulkan-compute] shader_result=%d\n", r);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkDescriptorSetLayoutBinding binding = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT
+    };
+
+    VkDescriptorSetLayoutCreateInfo setInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &binding
+    };
+
+    r = vkCreateDescriptorSetLayout(device, &setInfo, NULL, &setLayout);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkDescriptorPoolSize poolSize = {
+        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = 1
+    };
+
+    VkDescriptorPoolCreateInfo descriptorPoolInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 1,
+        .poolSizeCount = 1,
+        .pPoolSizes = &poolSize
+    };
+
+    r = vkCreateDescriptorPool(device, &descriptorPoolInfo,
+                               NULL, &descriptorPool);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkDescriptorSetAllocateInfo descriptorAlloc = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = descriptorPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &setLayout
+    };
+
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+
+    r = vkAllocateDescriptorSets(device, &descriptorAlloc, &descriptorSet);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkDescriptorBufferInfo descriptorBuffer = {
+        .buffer = buffer,
+        .offset = 0,
+        .range = 256
+    };
+
+    VkWriteDescriptorSet write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = descriptorSet,
+        .dstBinding = 0,
+        .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .pBufferInfo = &descriptorBuffer
+    };
+
+    vkUpdateDescriptorSets(device, 1, &write, 0, NULL);
+
+    VkPipelineLayoutCreateInfo layoutInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &setLayout
+    };
+
+    r = vkCreatePipelineLayout(device, &layoutInfo, NULL, &pipelineLayout);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkComputePipelineCreateInfo pipelineInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+            .module = shader,
+            .pName = "main"
+        },
+        .layout = pipelineLayout
+    };
+
+    r = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
+                                  &pipelineInfo, NULL, &pipeline);
+
+    LOG("[h1-vulkan-compute] pipeline_result=%d\n", r);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkCommandPoolCreateInfo commandPoolInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .queueFamilyIndex = family
+    };
+
+    r = vkCreateCommandPool(device, &commandPoolInfo, NULL, &commandPool);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkCommandBufferAllocateInfo commandAlloc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = commandPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1
+    };
+
+    VkCommandBuffer command = VK_NULL_HANDLE;
+
+    r = vkAllocateCommandBuffers(device, &commandAlloc, &command);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+    };
+
+    r = vkBeginCommandBuffer(command, &beginInfo);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+
+    vkCmdDispatch(command, 1, 1, 1);
+
+    LOG("[h1-vulkan-compute] dispatch_recorded=1\n");
+
+    r = vkEndCommandBuffer(command);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkFenceCreateInfo fenceInfo = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+    };
+
+    r = vkCreateFence(device, &fenceInfo, NULL, &fence);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkQueue queue = VK_NULL_HANDLE;
+    vkGetDeviceQueue(device, family, 0, &queue);
+
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command
+    };
+
+    r = vkQueueSubmit(queue, 1, &submitInfo, fence);
+
+    LOG("[h1-vulkan-compute] submit_result=%d\n", r);
+    if (r != VK_SUCCESS) goto cleanup;
+
+    pending = VK_TRUE;
+
+    r = vkWaitForFences(device, 1, &fence, VK_TRUE, 3000000000ULL);
+
+    LOG("[h1-vulkan-compute] wait_result=%d\n", r);
+
+    if (r != VK_SUCCESS) goto cleanup;
+
+    pending = VK_FALSE;
+
+    void *mapped = NULL;
+
+    r = vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &mapped);
+    LOG("[h1-vulkan-compute] map_result=%d\n", r);
+
+    if (r != VK_SUCCESS) goto cleanup;
+
+    VkResult invalidateResult = VK_SUCCESS;
+
+    if (!coherent) {
+        VkMappedMemoryRange range = {
+            .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+            .memory = memory,
+            .offset = 0,
+            .size = VK_WHOLE_SIZE
+        };
+
+        invalidateResult =
+            vkInvalidateMappedMemoryRanges(device, 1, &range);
+    }
+
+    if (invalidateResult == VK_SUCCESS) {
+        const uint32_t *words = (const uint32_t *)mapped;
+        uint32_t mismatches = 0;
+
+        for (uint32_t i = 0; i < 64; ++i) {
+            if (words[i] != (0xC0DE0000u + i))
+                ++mismatches;
+        }
+
+        LOG("[h1-vulkan-compute] first=0x%08x last=0x%08x mismatches=%u pass=%u\n",
+            words[0], words[63], mismatches, mismatches == 0);
+    } else {
+        LOG("[h1-vulkan-compute] invalidate_result=%d\n",
+            invalidateResult);
+    }
+
+    vkUnmapMemory(device, memory);
+
+cleanup:
+    if (pending) {
+        LOG("[h1-vulkan-compute] cleanup deferred: GPU pending\n");
+        return VK_TRUE;
+    }
+
+    if (fence != VK_NULL_HANDLE)
+        vkDestroyFence(device, fence, NULL);
+
+    if (commandPool != VK_NULL_HANDLE)
+        vkDestroyCommandPool(device, commandPool, NULL);
+
+    if (pipeline != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, pipeline, NULL);
+
+    if (pipelineLayout != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device, pipelineLayout, NULL);
+
+    if (descriptorPool != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(device, descriptorPool, NULL);
+
+    if (setLayout != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, setLayout, NULL);
+
+    if (shader != VK_NULL_HANDLE)
+        vkDestroyShaderModule(device, shader, NULL);
+
+    if (buffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(device, buffer, NULL);
+
+    if (memory != VK_NULL_HANDLE)
+        vkFreeMemory(device, memory, NULL);
+
+    LOG("[h1-vulkan-compute] cleanup_complete=1\n");
+    return VK_FALSE;
+}
+// H1-15O: probe passes its own device-specific queue-submit function pointer.
+extern VkResult vk_h1_legacy_submit_with_dispatch(PFN_vkQueueSubmit submit_fn,
+                             VkQueue queue, const VkCommandBuffer *buffers,
+                             uint32_t buffer_count, VkSemaphore wait_binary,
+                             VkPipelineStageFlags wait_stage,
+                             VkSemaphore signal_binary, VkFence fence);
+void h1_probe_vulkan_11(void) {
+    VkBool32 h1RetainedDevice = VK_FALSE;
+    LOG("[h1-vulkan-probe] starting in-app Vulkan 1.1 discovery\n");
+
+    void *lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    if (!lib) {
+        LOG("[h1-vulkan-probe] dlopen failed: %s\n", dlerror());
+        return;
+    }
+
+    PFN_vkGetInstanceProcAddr gipa =
+        (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
+
+    if (!gipa) {
+        LOG("[h1-vulkan-probe] vkGetInstanceProcAddr unavailable\n");
+        dlclose(lib);
+        return;
+    }
+
+    PFN_vkCreateInstance create =
+        (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
+
+    if (!create) {
+        LOG("[h1-vulkan-probe] vkCreateInstance unavailable\n");
+        dlclose(lib);
+        return;
+    }
+
+    VkApplicationInfo app = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "LASRecomp H1 Probe",
+        .apiVersion = VK_API_VERSION_1_1
+    };
+
+    VkInstanceCreateInfo ci = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &app
+    };
+
+    VkInstance instance = VK_NULL_HANDLE;
+    VkResult result = create(&ci, NULL, &instance);
+
+    LOG("[h1-vulkan-probe] instance_result=%d\n", result);
+
+    if (result != VK_SUCCESS) {
+        dlclose(lib);
+        return;
+    }
+
+    PFN_vkEnumeratePhysicalDevices enumerate =
+        (PFN_vkEnumeratePhysicalDevices)
+        gipa(instance, "vkEnumeratePhysicalDevices");
+
+    PFN_vkGetPhysicalDeviceProperties properties =
+        (PFN_vkGetPhysicalDeviceProperties)
+        gipa(instance, "vkGetPhysicalDeviceProperties");
+
+    PFN_vkDestroyInstance destroy =
+        (PFN_vkDestroyInstance)
+        gipa(instance, "vkDestroyInstance");
+
+    if (enumerate) {
+        uint32_t count = 0;
+        result = enumerate(instance, &count, NULL);
+
+        LOG("[h1-vulkan-probe] enumerate_result=%d device_count=%u\n",
+            result, count);
+
+        if (result == VK_SUCCESS && count > 0 && properties) {
+            VkPhysicalDevice *devices =
+                calloc(count, sizeof(*devices));
+
+            if (devices) {
+                VkResult r = enumerate(instance, &count, devices);
+
+                if (r == VK_SUCCESS || r == VK_INCOMPLETE) {
+                    for (uint32_t i = 0; i < count; ++i) {
+                        VkPhysicalDeviceProperties p;
+                        properties(devices[i], &p);
+
+                        LOG("[h1-vulkan-probe] gpu=%s api=%u.%u.%u maxStorageBufferRange=%u\n",
+                            p.deviceName,
+                            VK_API_VERSION_MAJOR(p.apiVersion),
+                            VK_API_VERSION_MINOR(p.apiVersion),
+                            VK_API_VERSION_PATCH(p.apiVersion),
+                            p.limits.maxStorageBufferRange);
+                        PFN_vkGetPhysicalDeviceFormatProperties h1FormatProperties =
+                            (PFN_vkGetPhysicalDeviceFormatProperties)
+                            gipa(instance, "vkGetPhysicalDeviceFormatProperties");
+
+                        PFN_vkGetPhysicalDeviceImageFormatProperties h1ImageFormatProperties =
+                            (PFN_vkGetPhysicalDeviceImageFormatProperties)
+                            gipa(instance, "vkGetPhysicalDeviceImageFormatProperties");
+
+                        if (h1FormatProperties && h1ImageFormatProperties) {
+                            VkFormatProperties fp = {0};
+
+                            h1FormatProperties(
+                                devices[i], VK_FORMAT_R8G8B8A8_UNORM, &fp);
+
+                            VkFormatFeatureFlags required =
+                                VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                                VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+
+                            LOG("[h1-vulkan-format] optimal_flags=0x%x color_attachment=%u transfer_src=%u\n",
+                                fp.optimalTilingFeatures,
+                                !!(fp.optimalTilingFeatures &
+                                   VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT),
+                                !!(fp.optimalTilingFeatures &
+                                   VK_FORMAT_FEATURE_TRANSFER_SRC_BIT));
+
+                            VkImageFormatProperties imageProps = {0};
+
+                            VkResult formatResult = h1ImageFormatProperties(
+                                devices[i],
+                                VK_FORMAT_R8G8B8A8_UNORM,
+                                VK_IMAGE_TYPE_2D,
+                                VK_IMAGE_TILING_OPTIMAL,
+                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                0,
+                                &imageProps);
+
+                            LOG("[h1-vulkan-format] image_result=%d max_width=%u max_height=%u max_layers=%u sample_counts=0x%x\n",
+                                formatResult,
+                                imageProps.maxExtent.width,
+                                imageProps.maxExtent.height,
+                                imageProps.maxArrayLayers,
+                                imageProps.sampleCounts);
+
+                            LOG("[h1-vulkan-format] rgba8_256_supported=%u\n",
+                                formatResult == VK_SUCCESS &&
+                                (fp.optimalTilingFeatures & required) == required &&
+                                imageProps.maxExtent.width >= 256 &&
+                                imageProps.maxExtent.height >= 256 &&
+                                (imageProps.sampleCounts &
+                                 VK_SAMPLE_COUNT_1_BIT) != 0);
+                        } else {
+                            LOG("[h1-vulkan-format] entry_point_missing=1\n");
+                        }
+                        PFN_vkGetPhysicalDeviceFeatures getFeatures =
+                            (PFN_vkGetPhysicalDeviceFeatures)
+                            gipa(instance, "vkGetPhysicalDeviceFeatures");
+
+                        PFN_vkGetPhysicalDeviceQueueFamilyProperties getQueues =
+                            (PFN_vkGetPhysicalDeviceQueueFamilyProperties)
+                            gipa(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+
+                        PFN_vkEnumerateDeviceExtensionProperties getExtensions =
+                            (PFN_vkEnumerateDeviceExtensionProperties)
+                            gipa(instance, "vkEnumerateDeviceExtensionProperties");
+
+                        PFN_vkCreateDevice createDevice =
+                            (PFN_vkCreateDevice)
+                            gipa(instance, "vkCreateDevice");
+
+                        PFN_vkGetDeviceProcAddr gdpa =
+                            (PFN_vkGetDeviceProcAddr)
+                            gipa(instance, "vkGetDeviceProcAddr");
+
+                        if (!getFeatures || !getQueues || !getExtensions ||
+                            !createDevice || !gdpa) {
+                            LOG("[h1-vulkan-cap] required entry point missing\n");
+                            continue;
+                        }
+
+                        VkPhysicalDeviceFeatures features = {0};
+                        getFeatures(devices[i], &features);
+
+                        LOG("[h1-vulkan-cap] shaderInt64=%u shaderInt16=%u shaderFloat64=%u BC=%u ASTC=%u\n",
+                            features.shaderInt64, features.shaderInt16,
+                            features.shaderFloat64, features.textureCompressionBC,
+                            features.textureCompressionASTC_LDR);
+
+                        LOG("[h1-vulkan-cap] storageImageExtendedFormats=%u fragmentAtomics=%u vertexAtomics=%u robustBufferAccess=%u\n",
+                            features.shaderStorageImageExtendedFormats,
+                            features.fragmentStoresAndAtomics,
+                            features.vertexPipelineStoresAndAtomics,
+                            features.robustBufferAccess);
+
+                        uint32_t queueCount = 0;
+                        getQueues(devices[i], &queueCount, NULL);
+
+                        uint32_t selectedQueue = UINT32_MAX;
+
+                        if (queueCount > 0 && queueCount <= 64) {
+                            VkQueueFamilyProperties *queues =
+                                calloc(queueCount, sizeof(*queues));
+
+                            if (queues) {
+                                getQueues(devices[i], &queueCount, queues);
+
+                                for (uint32_t q = 0; q < queueCount; ++q) {
+                                    LOG("[h1-vulkan-cap] queue=%u flags=0x%x count=%u graphics=%u compute=%u\n",
+                                        q, queues[q].queueFlags, queues[q].queueCount,
+                                        !!(queues[q].queueFlags & VK_QUEUE_GRAPHICS_BIT),
+                                        !!(queues[q].queueFlags & VK_QUEUE_COMPUTE_BIT));
+
+                                    if (selectedQueue == UINT32_MAX &&
+                                        queues[q].queueCount > 0 &&
+                                        (queues[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+                                        (queues[q].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
+                                        selectedQueue = q;
+                                    }
+                                }
+
+                                free(queues);
+                            }
+                        }
+
+                        uint32_t extensionCount = 0;
+                        VkResult er = getExtensions(
+                            devices[i], NULL, &extensionCount, NULL);
+
+                        LOG("[h1-vulkan-cap] extension_query=%d count=%u\n",
+                            er, extensionCount);
+
+                        if (er == VK_SUCCESS && extensionCount > 0 &&
+                            extensionCount <= 1024) {
+                            VkExtensionProperties *extensions =
+                                calloc(extensionCount, sizeof(*extensions));
+
+                            if (extensions) {
+                                er = getExtensions(
+                                    devices[i], NULL, &extensionCount, extensions);
+
+                                if (er == VK_SUCCESS || er == VK_INCOMPLETE) {
+                                    // H1-15: read-only compatibility classification.
+                                    // Extension presence is NOT equivalent to enabled feature support.
+                                    const char *h115Names[] = {
+                                        "VK_KHR_timeline_semaphore",
+                                        "VK_KHR_synchronization2",
+                                        "VK_KHR_dynamic_rendering",
+                                        "VK_EXT_extended_dynamic_state",
+                                        "VK_EXT_extended_dynamic_state2",
+                                        "VK_EXT_scalar_block_layout",
+                                        "VK_KHR_8bit_storage",
+                                        "VK_KHR_shader_float16_int8",
+                                        "VK_KHR_buffer_device_address"
+                                    };
+                                    for (uint32_t h = 0; h < sizeof(h115Names)/sizeof(h115Names[0]); ++h) {
+                                        VkBool32 found = VK_FALSE;
+                                        for (uint32_t e = 0; e < extensionCount; ++e) {
+                                            if (strcmp(extensions[e].extensionName, h115Names[h]) == 0) {
+                                                found = VK_TRUE;
+                                                break;
+                                            }
+                                        }
+                                        LOG("[h1-15a] extension=%s advertised=%u feature_unverified=1\n",
+                                            h115Names[h], found);
+                                    }
+                                    LOG("[h1-15b] legacy_queue_submit=previous_H1_13E_test\n");
+                                    LOG("[h1-15c] legacy_render_pass=previous_H1_13E_test\n");
+                                    for (uint32_t e = 0; e < extensionCount; ++e) {
+                                        LOG("[h1-vulkan-cap] extension=%s\n",
+                                            extensions[e].extensionName);
+                                    }
+                                }
+
+                                free(extensions);
+                            }
+                        }
+
+                        if (selectedQueue == UINT32_MAX) {
+                            LOG("[h1-vulkan-cap] no combined graphics+compute queue\n");
+                            continue;
+                        }
+
+                        float priority = 1.0f;
+
+                        VkDeviceQueueCreateInfo queueInfo = {
+                            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                            .queueFamilyIndex = selectedQueue,
+                            .queueCount = 1,
+                            .pQueuePriorities = &priority
+                        };
+
+                        VkDeviceCreateInfo deviceInfo = {
+                            .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+                            .queueCreateInfoCount = 1,
+                            .pQueueCreateInfos = &queueInfo
+                        };
+
+                        VkDevice logicalDevice = VK_NULL_HANDLE;
+
+                        VkResult deviceResult = createDevice(
+                            devices[i], &deviceInfo, NULL, &logicalDevice);
+
+                        LOG("[h1-vulkan-cap] logical_device_result=%d queue_family=%u\n",
+                            deviceResult, selectedQueue);
+
+                        if (deviceResult == VK_SUCCESS &&
+                            logicalDevice != VK_NULL_HANDLE) {
+                            PFN_vkDestroyDevice destroyDevice =
+                                (PFN_vkDestroyDevice)
+                                gdpa(logicalDevice, "vkDestroyDevice");
+
+                            if (destroyDevice) {
+                                LOG("[h1-vulkan-submit] starting\n");
+                                PFN_vkCreateBuffer h1CreateBuffer =
+                                    (PFN_vkCreateBuffer)gdpa(logicalDevice, "vkCreateBuffer");
+                                PFN_vkDestroyBuffer h1DestroyBuffer =
+                                    (PFN_vkDestroyBuffer)gdpa(logicalDevice, "vkDestroyBuffer");
+                                PFN_vkGetBufferMemoryRequirements h1Requirements =
+                                    (PFN_vkGetBufferMemoryRequirements)
+                                    gdpa(logicalDevice, "vkGetBufferMemoryRequirements");
+                                PFN_vkGetPhysicalDeviceMemoryProperties h1MemoryProperties =
+                                    (PFN_vkGetPhysicalDeviceMemoryProperties)
+                                    gipa(instance, "vkGetPhysicalDeviceMemoryProperties");
+                                PFN_vkAllocateMemory h1AllocateMemory =
+                                    (PFN_vkAllocateMemory)gdpa(logicalDevice, "vkAllocateMemory");
+                                PFN_vkFreeMemory h1FreeMemory =
+                                    (PFN_vkFreeMemory)gdpa(logicalDevice, "vkFreeMemory");
+                                PFN_vkBindBufferMemory h1BindBuffer =
+                                    (PFN_vkBindBufferMemory)gdpa(logicalDevice, "vkBindBufferMemory");
+                                PFN_vkMapMemory h1MapMemory =
+                                    (PFN_vkMapMemory)gdpa(logicalDevice, "vkMapMemory");
+                                PFN_vkUnmapMemory h1UnmapMemory =
+                                    (PFN_vkUnmapMemory)gdpa(logicalDevice, "vkUnmapMemory");
+                                PFN_vkInvalidateMappedMemoryRanges h1Invalidate =
+                                    (PFN_vkInvalidateMappedMemoryRanges)
+                                    gdpa(logicalDevice, "vkInvalidateMappedMemoryRanges");
+                                PFN_vkCmdFillBuffer h1Fill =
+                                    (PFN_vkCmdFillBuffer)gdpa(logicalDevice, "vkCmdFillBuffer");
+
+                                VkBuffer h1Buffer = VK_NULL_HANDLE;
+                                VkDeviceMemory h1Memory = VK_NULL_HANDLE;
+
+                                VkBool32 h1Coherent = VK_FALSE;
+                                VkBool32 h1Recorded = VK_FALSE;
+
+                                VkBool32 h1SafeToDestroy = VK_TRUE;
+                                VkBool32 h1GpuPending = VK_FALSE;
+                                VkFence h1Fence = VK_NULL_HANDLE;
+
+                                PFN_vkGetDeviceQueue getQueue =
+                                    (PFN_vkGetDeviceQueue)
+                                    gdpa(logicalDevice, "vkGetDeviceQueue");
+
+                                PFN_vkCreateCommandPool createPool =
+                                    (PFN_vkCreateCommandPool)
+                                    gdpa(logicalDevice, "vkCreateCommandPool");
+
+                                PFN_vkDestroyCommandPool destroyPool =
+                                    (PFN_vkDestroyCommandPool)
+                                    gdpa(logicalDevice, "vkDestroyCommandPool");
+
+                                PFN_vkAllocateCommandBuffers allocateBuffers =
+                                    (PFN_vkAllocateCommandBuffers)
+                                    gdpa(logicalDevice, "vkAllocateCommandBuffers");
+
+                                PFN_vkBeginCommandBuffer beginBuffer =
+                                    (PFN_vkBeginCommandBuffer)
+                                    gdpa(logicalDevice, "vkBeginCommandBuffer");
+
+                                PFN_vkEndCommandBuffer endBuffer =
+                                    (PFN_vkEndCommandBuffer)
+                                    gdpa(logicalDevice, "vkEndCommandBuffer");
+
+                                PFN_vkQueueSubmit queueSubmit =
+                                    (PFN_vkQueueSubmit)
+                                    gdpa(logicalDevice, "vkQueueSubmit");
+
+                                PFN_vkCreateFence createFence =
+                                    (PFN_vkCreateFence)
+                                    gdpa(logicalDevice, "vkCreateFence");
+
+                                PFN_vkWaitForFences waitFences =
+                                    (PFN_vkWaitForFences)
+                                    gdpa(logicalDevice, "vkWaitForFences");
+
+                                PFN_vkDestroyFence destroyFence =
+                                    (PFN_vkDestroyFence)
+                                    gdpa(logicalDevice, "vkDestroyFence");
+
+                                if (getQueue && createPool && destroyPool &&
+                                    allocateBuffers && beginBuffer && endBuffer &&
+                                    queueSubmit && createFence && waitFences &&
+                                    destroyFence) {
+
+                                    VkQueue queue = VK_NULL_HANDLE;
+                                    getQueue(logicalDevice, selectedQueue, 0, &queue);
+
+                                    VkCommandPool pool = VK_NULL_HANDLE;
+
+                                    VkCommandPoolCreateInfo poolInfo = {
+                                        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                        .queueFamilyIndex = selectedQueue
+                                    };
+
+                                    VkResult poolResult =
+                                        createPool(logicalDevice, &poolInfo, NULL, &pool);
+
+                                    LOG("[h1-vulkan-submit] pool_result=%d\n", poolResult);
+
+                                    if (poolResult == VK_SUCCESS) {
+                                        VkCommandBuffer cmd = VK_NULL_HANDLE;
+
+                                        VkCommandBufferAllocateInfo allocInfo = {
+                                            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                            .commandPool = pool,
+                                            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                            .commandBufferCount = 1
+                                        };
+
+                                        VkResult allocResult =
+                                            allocateBuffers(logicalDevice, &allocInfo, &cmd);
+
+                                        LOG("[h1-vulkan-submit] alloc_result=%d\n", allocResult);
+
+                                        if (allocResult == VK_SUCCESS) {
+                                            VkCommandBufferBeginInfo beginInfo = {
+                                                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+                                            };
+
+                                            VkResult beginResult = beginBuffer(cmd, &beginInfo);
+
+                                            LOG("[h1-vulkan-submit] begin_result=%d\n", beginResult);
+
+                                            if (beginResult == VK_SUCCESS) {
+                                                if (h1CreateBuffer && h1DestroyBuffer &&
+                                                    h1Requirements && h1MemoryProperties &&
+                                                    h1AllocateMemory && h1FreeMemory &&
+                                                    h1BindBuffer && h1MapMemory &&
+                                                    h1UnmapMemory && h1Invalidate && h1Fill) {
+
+                                                    VkBufferCreateInfo bufferInfo = {
+                                                        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                                        .size = 256,
+                                                        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+                                                    };
+
+                                                    VkResult br = h1CreateBuffer(
+                                                        logicalDevice, &bufferInfo, NULL, &h1Buffer);
+
+                                                    LOG("[h1-vulkan-buffer] create_result=%d\n", br);
+
+                                                    if (br == VK_SUCCESS) {
+                                                        VkMemoryRequirements req;
+                                                        h1Requirements(logicalDevice, h1Buffer, &req);
+
+                                                        VkPhysicalDeviceMemoryProperties mp;
+                                                        h1MemoryProperties(devices[i], &mp);
+
+                                                        uint32_t memoryIndex = UINT32_MAX;
+
+                                                        for (uint32_t m = 0; m < mp.memoryTypeCount; ++m) {
+                                                            VkMemoryPropertyFlags flags =
+                                                                mp.memoryTypes[m].propertyFlags;
+
+                                                            if ((req.memoryTypeBits & (1u << m)) &&
+                                                                (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+                                                                memoryIndex = m;
+                                                                h1Coherent =
+                                                                    !!(flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                                                                break;
+                                                            }
+                                                        }
+
+                                                        LOG("[h1-vulkan-buffer] memory_type=%u coherent=%u\n",
+                                                            memoryIndex, h1Coherent);
+
+                                                        if (memoryIndex != UINT32_MAX) {
+                                                            VkMemoryAllocateInfo mai = {
+                                                                .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                                                .allocationSize = req.size,
+                                                                .memoryTypeIndex = memoryIndex
+                                                            };
+
+
+
+                                                            VkResult ar = h1AllocateMemory(
+                                                                logicalDevice, &mai, NULL, &h1Memory);
+
+                                                            LOG("[h1-vulkan-buffer] allocate_result=%d\n", ar);
+
+                                                            if (ar == VK_SUCCESS) {
+                                                                VkResult bindResult = h1BindBuffer(
+                                                                    logicalDevice, h1Buffer, h1Memory, 0);
+
+                                                                LOG("[h1-vulkan-buffer] bind_result=%d\n",
+                                                                    bindResult);
+
+                                                                if (bindResult == VK_SUCCESS) {
+                                                                    h1Fill(cmd, h1Buffer, 0, 256, 0xA1B2C3D4u);
+                                                                    h1Recorded = VK_TRUE;
+                                                                    LOG("[h1-vulkan-buffer] fill_recorded=1\n");
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    LOG("[h1-vulkan-buffer] missing entry point\n");
+                                                }
+                                                VkResult endResult = endBuffer(cmd);
+
+                                                LOG("[h1-vulkan-submit] end_result=%d\n", endResult);
+
+                                                if (endResult == VK_SUCCESS) {
+                                                    h1Fence = VK_NULL_HANDLE;
+
+                                                    VkFenceCreateInfo fenceInfo = {
+                                                        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+                                                    };
+
+                                                    VkResult fenceResult =
+                                                        createFence(logicalDevice, &fenceInfo,
+                                                                    NULL, &h1Fence);
+
+                                                    LOG("[h1-vulkan-submit] fence_result=%d\n",
+                                                        fenceResult);
+
+                                                    if (fenceResult == VK_SUCCESS) {
+                                                        VkResult submitResult =
+                                                            vk_h1_legacy_submit_with_dispatch(
+                                                                queueSubmit, queue, &cmd, 1,
+                                                                VK_NULL_HANDLE, 0,
+                                                                VK_NULL_HANDLE, h1Fence);
+                                                        LOG("[h1-15o] legacy_submit_result=%d\n", submitResult);
+
+                                                        LOG("[h1-vulkan-submit] submit_result=%d\n",
+                                                            submitResult);
+
+                                                        if (submitResult == VK_SUCCESS) {
+                                                            h1GpuPending = VK_TRUE;
+                                                            VkResult waitResult =
+                                                                waitFences(logicalDevice, 1,
+                                                                           &h1Fence, VK_TRUE,
+                                                                           3000000000ULL);
+
+                                                            LOG("[h1-vulkan-submit] wait_result=%d\n",
+                                                                waitResult);
+                                                            LOG("[h1-15o] fence_wait_result=%d\n", waitResult);
+
+                                                            if (waitResult == VK_SUCCESS)
+                                                                h1GpuPending = VK_FALSE;
+                                                            if (waitResult == VK_SUCCESS &&
+                                                                h1Recorded && h1Memory != VK_NULL_HANDLE) {
+
+                                                                void *mapped = NULL;
+                                                                VkResult mapResult = h1MapMemory(logicalDevice, h1Memory, 0, VK_WHOLE_SIZE, 0, &mapped);
+
+                                                                LOG("[h1-vulkan-buffer] map_result=%d\n",
+                                                                    mapResult);
+
+                                                                if (mapResult == VK_SUCCESS) {
+                                                                    VkResult invalidateResult = VK_SUCCESS;
+
+                                                                    if (!h1Coherent) {
+                                                                        VkMappedMemoryRange range = {
+                                                                            .sType =
+                                                                                VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                                                                            .memory = h1Memory,
+                                                                            .offset = 0,
+                                                                            .size = VK_WHOLE_SIZE
+                                                                        };
+
+                                                                        invalidateResult = h1Invalidate(
+                                                                            logicalDevice, 1, &range);
+                                                                    }
+
+                                                                    LOG("[h1-vulkan-buffer] invalidate_result=%d\n",
+                                                                        invalidateResult);
+
+                                                                    if (invalidateResult == VK_SUCCESS) {
+                                                                        const uint32_t *words =
+                                                                            (const uint32_t *)mapped;
+
+                                                                        uint32_t mismatchCount = 0;
+
+                                                                        for (uint32_t w = 0; w < 64; ++w) {
+                                                                            if (words[w] != 0xA1B2C3D4u)
+                                                                                ++mismatchCount;
+                                                                        }
+
+                                                                        LOG("[h1-vulkan-buffer] first=0x%08x mismatches=%u pass=%u\n",
+                                                                            words[0], mismatchCount,
+                                                                            mismatchCount == 0);
+                                                                        LOG("[h1-15o] buffer_readback_pass=%u\n",
+                                                                            mismatchCount == 0);
+                                                                    }
+
+                                                                    h1UnmapMemory(logicalDevice, h1Memory);
+                                                                }
+                                                            }
+                                                        }
+
+
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        LOG("[h1-vulkan-buffer] bounded_cleanup=%u\n",
+                                            !h1GpuPending);
+
+                                        if (!h1GpuPending) {
+                                            if (h1Fence != VK_NULL_HANDLE)
+                                                destroyFence(logicalDevice, h1Fence, NULL);
+
+                                            destroyPool(logicalDevice, pool, NULL);
+
+                                            if (h1Buffer != VK_NULL_HANDLE && h1DestroyBuffer)
+                                                h1DestroyBuffer(logicalDevice, h1Buffer, NULL);
+
+                                            if (h1Memory != VK_NULL_HANDLE && h1FreeMemory)
+                                                h1FreeMemory(logicalDevice, h1Memory, NULL);
+                                        } else {
+                                            h1SafeToDestroy = VK_FALSE;
+                                            h1RetainedDevice = VK_TRUE;
+                                            LOG("[h1-vulkan-buffer] cleanup deferred: GPU pending\n");
+                                        }
+
+                                    }
+                                } else {
+                                    LOG("[h1-vulkan-submit] missing Vulkan entry point\n");
+                                }
+                                if (h1SafeToDestroy) {
+                                    if (h1_probe_compute_11(
+                                            instance, devices[i], logicalDevice,
+                                            selectedQueue, gipa, gdpa)) {
+                                        h1SafeToDestroy = VK_FALSE;
+                                        h1RetainedDevice = VK_TRUE;
+                                    }
+                                }
+                                if (h1SafeToDestroy) {
+                                    if (h1_probe_graphics_11(
+                                            instance, devices[i], logicalDevice,
+                                            selectedQueue, gipa, gdpa)) {
+                                        h1SafeToDestroy = VK_FALSE;
+                                        h1RetainedDevice = VK_TRUE;
+                                    }
+                                }
+                                if (h1SafeToDestroy) {
+                                    destroyDevice(logicalDevice, NULL);
+                                    LOG("[h1-vulkan-buffer] device_destroyed=1\n");
+                                } else {
+                                    LOG("[h1-vulkan-buffer] device teardown deferred\n");
+                                }
+
+                            } else {
+                                LOG("[h1-vulkan-cap] destroy entry point unavailable\n");
+                            }
+                        }
+                    }
+                }
+
+                free(devices);
+            }
+        }
+    } else {
+        LOG("[h1-vulkan-probe] enumeration function unavailable\n");
+    }
+
+    if (!h1RetainedDevice) {
+        if (destroy) {
+            destroy(instance, NULL);
+            LOG("[h1-vulkan-buffer] instance_destroyed=1\n");
+        }
+        dlclose(lib);
+    } else {
+        LOG("[h1-vulkan-buffer] instance teardown deferred: GPU pending\n");
+        LOG("[h1-vulkan-buffer] Vulkan library retained until process exit\n");
+    }
+
+    LOG("[h1-vulkan-probe] complete\n");
+}
+#endif
 void backend_init(void) {
     while (!atomic_load(&ui_ready)) SDL_Delay(1);
 #ifdef __ANDROID__

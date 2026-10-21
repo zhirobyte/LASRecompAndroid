@@ -1,6 +1,7 @@
 // NVN objects, builders, and state objects (everything except command recording).
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "../kernel.h"
 #include "nvn.h"
@@ -313,7 +314,13 @@ NVN(nvnQueueGetTotalCommandMemoryUsed) { RET(0); }
 NVN(nvnQueueGetTotalControlMemoryUsed) { RET(0); }
 NVN(nvnQueueGetTotalComputeMemoryUsed) { RET(0); }
 NVN(nvnQueueResetMemoryUsageCounts) { (void)c; }
+// H1-15Q: log only the first 16 guest submission calls, without handles.
+static atomic_uint h1_15q_submit_seen = ATOMIC_VAR_INIT(0);
 NVN(nvnQueueSubmitCommands) {
+    unsigned ordinal = atomic_fetch_add_explicit(&h1_15q_submit_seen, 1u, memory_order_relaxed);
+    if (ordinal < 16u)
+        LOG("[h1-15q] submit ordinal=%u handle_count=%llu\n",
+            ordinal + 1u, (unsigned long long)A(1));
     int n = (int)A(1);
     const uint64_t *handles = AP(2);
     for (int i = 0; i < n; i++) backend_execute(handles[i]);
