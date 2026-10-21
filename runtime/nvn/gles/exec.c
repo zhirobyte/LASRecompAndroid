@@ -14,6 +14,9 @@
 #include <string.h>
 
 #include "../nvn.h"
+#ifdef __ANDROID__
+#include "record_coordinator.h"
+#endif
 
 #define GLES_EXEC_MAX_RECORDS 100000u
 #define GLES_EXEC_MAX_DEPTH 8
@@ -226,5 +229,450 @@ bool gles_execute_test_command_list(
                              gles_clear_handler);
 
     out->failed = !ok;
+    return ok;
+}
+
+/*
+ * Diagnostic-only entry point for actual guest command lists.
+ * This does not execute graphics operations or signal GPU completion.
+ */
+/*
+ * E127 real render-command compatibility.
+ * Diagnostic-only: never invokes OpenGL ES.
+ *
+ * The real submission path currently processes one command list
+ * at a time on the SDL UI thread.
+ */
+typedef struct {
+    uint64_t rt_total;
+    uint64_t rt_layout_compatible;
+    /* E129 render-target reasons */
+    uint64_t rt_short;
+    uint64_t rt_not_single;
+    uint64_t rt_missing_color;
+    uint64_t rt_has_view;
+    uint64_t rt_has_depth;
+    uint64_t rt_extra_color;
+    uint64_t rt_zero_color;
+    uint64_t rt_multi_color;
+    /* E131 framebuffer configuration */
+    uint64_t rt_color_only;
+    uint64_t rt_color_depth;
+    uint64_t rt_depth_only;
+    uint64_t rt_no_attachments;
+    uint64_t rt_color_view;
+    uint64_t rt_depth_view;
+    uint64_t rt_color_view_setmask;
+    uint64_t rt_depth_view_setmask;
+    uint64_t clear_total;
+    uint64_t clear_layout_compatible;
+    uint64_t clear_partial_mask;
+    uint64_t clear_nonfloat;
+    uint64_t clear_other_attachment;
+    uint64_t clear_short_record;
+} E127RenderStats;
+
+static E127RenderStats e127_render_stats;
+
+typedef struct {
+    uint64_t tex[8];
+    NvnTextureView views[8];
+    uint8_t has_view[8];
+    uint64_t depth;
+    NvnTextureView dview;
+    uint8_t has_dview;
+} E127RtRecord;
+
+typedef struct {
+    uint32_t depth_enable;
+    uint32_t stencil_mask;
+    uint32_t stencil_value;
+    float depth_value;
+} E162DepthClear;
+
+/* E167C3_EXECUTION_ORDER
+ * Decoder-only state. Pointer values are opaque identities.
+ * No host texture dereferences or graphics operations.
+ */
+typedef struct {
+    uint64_t step;
+    uint64_t rt_count;
+    uint64_t depth_clear_count;
+    uint64_t color_pointer;
+    uint64_t depth_pointer;
+    unsigned color_count;
+    bool has_target;
+} E167C3State;
+
+static E167C3State e167c3_state;
+static E162DepthClear e162_depth_clear;
+static int e162_depth_ready;
+
+static GlesCommandResult e127_inspect_render_command(
+    const CmdRec *r)
+{
+    if (r->op == CMD_SET_RENDER_TARGETS) {
+#ifdef __ANDROID__
+        /*
+         * R8D-4D2: diagnostic coverage of the live RT record
+         * identity bridge during actual CMD_CALL/JUMP traversal.
+         *
+         * The key is looked up by the current record address.
+         * Address reuse may make it different from the original
+         * recording generation. Never authorize GPU execution
+         * from this result.
+         */
+        {
+            extern bool e167d3g4jr8d4_lookup_record_key(
+                uintptr_t record_address,
+                GlesRecordCoordinatorKey *out);
+
+            static unsigned r8d4d2_total;
+            static unsigned r8d4d2_found;
+            static unsigned r8d4d2_missing;
+
+            GlesRecordCoordinatorKey key = {0};
+
+            bool found = e167d3g4jr8d4_lookup_record_key(
+                (uintptr_t)r, &key);
+
+            unsigned total = ++r8d4d2_total;
+
+            if (found)
+                ++r8d4d2_found;
+            else
+                ++r8d4d2_missing;
+
+            if (total <= 64u) {
+                fprintf(stderr,
+                    "[R8D4D2] rt=%u record=0x%llx "
+                    "found=%u generation=%llu "
+                    "found_total=%u missing_total=%u\n",
+                    total,
+                    (unsigned long long)(uintptr_t)r,
+                    found ? 1u : 0u,
+                    (unsigned long long)key.generation,
+                    r8d4d2_found,
+                    r8d4d2_missing);
+            }
+        }
+#endif
+        e127_render_stats.rt_total++;
+
+        if (r->size < sizeof(CmdRec) + sizeof(E127RtRecord)) {
+            e127_render_stats.rt_short++;
+        }
+        else {
+            E127RtRecord rt;
+            memcpy(&rt, r->extra, sizeof(rt));
+            /* E167C3: update state in actual decoder traversal order. */
+            e167c3_state.step++;
+            e167c3_state.rt_count++;
+            e167c3_state.color_count = (unsigned)r->x[0];
+            e167c3_state.color_pointer = rt.tex[0];
+            e167c3_state.depth_pointer = rt.depth;
+            e167c3_state.has_target = true;
+
+            if (e167c3_state.rt_count <= 64u) {
+                LOG("[E167C3] step=%llu RT colors=%u "
+                    "color_ptr=0x%llx depth_ptr=0x%llx "
+                    "color_view=%u depth_view=%u\n",
+                    (unsigned long long)e167c3_state.step,
+                    e167c3_state.color_count,
+                    (unsigned long long)e167c3_state.color_pointer,
+                    (unsigned long long)e167c3_state.depth_pointer,
+                    (unsigned)rt.has_view[0],
+                    (unsigned)rt.has_dview);
+            }
+
+
+            if (r->x[0] == 0)
+                e127_render_stats.rt_zero_color++;
+
+            if (r->x[0] > 1)
+                e127_render_stats.rt_multi_color++;
+
+            if (r->x[0] != 1)
+                e127_render_stats.rt_not_single++;
+
+            if (!rt.tex[0])
+                e127_render_stats.rt_missing_color++;
+
+            if (rt.has_view[0])
+                e127_render_stats.rt_has_view++;
+
+            if (rt.depth || rt.has_dview)
+                e127_render_stats.rt_has_depth++;
+
+            bool extra = false;
+            for (unsigned i = 1; i < 8; i++) {
+                if (rt.tex[i] || rt.has_view[i])
+                    extra = true;
+            }
+
+            if (extra)
+                e127_render_stats.rt_extra_color++;
+
+            /* E131 framebuffer configuration */
+            bool has_color = r->x[0] > 0 && rt.tex[0] != 0;
+            bool has_depth = rt.depth != 0;
+
+            if (has_color && has_depth)
+                e127_render_stats.rt_color_depth++;
+            else if (has_color)
+                e127_render_stats.rt_color_only++;
+            else if (has_depth)
+                e127_render_stats.rt_depth_only++;
+            else
+                e127_render_stats.rt_no_attachments++;
+
+            /* E134 texture-view parameter probe.
+             * Log copied command data only. No texture dereference,
+             * GPU resource creation, or GL calls.
+             */
+            if (rt.has_view[0]) {
+                const NvnTextureView *v = &rt.views[0];
+
+                if (e127_render_stats.rt_color_view < 12) {
+                    fprintf(stderr,
+                        "[E134] COLOR view=%llu mask=%#x "
+                        "base=%u levels=%u layer=%u layers=%u "
+                        "format=%#x target=%#x ds=%#x "
+                        "swizzle=%u,%u,%u,%u\n",
+                        (unsigned long long)
+                            e127_render_stats.rt_color_view,
+                        (unsigned)v->setmask,
+                        (unsigned)v->base_level,
+                        (unsigned)v->num_levels,
+                        (unsigned)v->min_layer,
+                        (unsigned)v->num_layers,
+                        (unsigned)v->format,
+                        (unsigned)v->target,
+                        (unsigned)v->ds_mode,
+                        (unsigned)v->swizzle[0],
+                        (unsigned)v->swizzle[1],
+                        (unsigned)v->swizzle[2],
+                        (unsigned)v->swizzle[3]);
+                }
+
+                e127_render_stats.rt_color_view++;
+
+                if (v->setmask)
+                    e127_render_stats.rt_color_view_setmask++;
+            }
+
+            if (rt.has_dview) {
+                const NvnTextureView *v = &rt.dview;
+
+                if (e127_render_stats.rt_depth_view < 12) {
+                    fprintf(stderr,
+                        "[E134] DEPTH view=%llu mask=%#x "
+                        "base=%u levels=%u layer=%u layers=%u "
+                        "format=%#x target=%#x ds=%#x "
+                        "swizzle=%u,%u,%u,%u\n",
+                        (unsigned long long)
+                            e127_render_stats.rt_depth_view,
+                        (unsigned)v->setmask,
+                        (unsigned)v->base_level,
+                        (unsigned)v->num_levels,
+                        (unsigned)v->min_layer,
+                        (unsigned)v->num_layers,
+                        (unsigned)v->format,
+                        (unsigned)v->target,
+                        (unsigned)v->ds_mode,
+                        (unsigned)v->swizzle[0],
+                        (unsigned)v->swizzle[1],
+                        (unsigned)v->swizzle[2],
+                        (unsigned)v->swizzle[3]);
+                }
+
+                e127_render_stats.rt_depth_view++;
+
+                if (v->setmask)
+                    e127_render_stats.rt_depth_view_setmask++;
+            }
+
+            if (r->x[0] == 1 &&
+                rt.tex[0] &&
+                !rt.has_view[0] &&
+                !rt.depth &&
+                !rt.has_dview &&
+                !extra)
+                e127_render_stats.rt_layout_compatible++;
+        }
+    }
+    else if (r->op == CMD_CLEAR_COLOR) {
+        e127_render_stats.clear_total++;
+
+        /* E161B: inspect real recorded values, no GPU execution. */
+        if (e127_render_stats.clear_total <= 12 &&
+            r->size >= sizeof(CmdRec) + 16u) {
+            uint32_t bits[4] = {0};
+            memcpy(bits, r->extra, sizeof(bits));
+            LOG("[E161B] COLOR seq=%llu attachment=%llu mask=0x%llx type=%llu bits=%08x,%08x,%08x,%08x\n",
+                (unsigned long long)e127_render_stats.clear_total,
+                (unsigned long long)r->x[0],
+                (unsigned long long)r->x[2],
+                (unsigned long long)r->x[5],
+                bits[0], bits[1], bits[2], bits[3]);
+        }
+
+        if (r->size < sizeof(CmdRec) + 16u) {
+            e127_render_stats.clear_short_record++;
+        }
+        else {
+            if (r->x[0] != 0)
+                e127_render_stats.clear_other_attachment++;
+
+            if (r->x[5] != 0)
+                e127_render_stats.clear_nonfloat++;
+
+            if ((r->x[2] & 0xFu) != 0xFu)
+                e127_render_stats.clear_partial_mask++;
+
+            if (r->x[0] == 0 &&
+                r->x[5] == 0 &&
+                (r->x[2] & 0xFu) == 0xFu)
+                e127_render_stats.clear_layout_compatible++;
+        }
+    }
+
+    if (r->op == CMD_CLEAR_DEPTH_STENCIL) {
+        /* E167C3: depth clear uses the most recently traversed RT. */
+        e167c3_state.step++;
+        e167c3_state.depth_clear_count++;
+
+        if (e167c3_state.depth_clear_count <= 32u) {
+            LOG("[E167C3] step=%llu CLEAR_DEPTH "
+                "rt_seen=%u depth_ptr=0x%llx "
+                "depth_enable=%llu value=%f "
+                "stencil_mask=0x%llx\n",
+                (unsigned long long)e167c3_state.step,
+                e167c3_state.has_target ? 1u : 0u,
+                (unsigned long long)e167c3_state.depth_pointer,
+                (unsigned long long)r->x[0],
+                (double)r->f[0],
+                (unsigned long long)r->x[2]);
+        }
+
+        /*
+         * E162: first real recorded depth-clear values only.
+         * This is a diagnostic sample, not command replay.
+         */
+        int e162_expected = 0;
+        if (__atomic_compare_exchange_n(
+                &e162_depth_ready, &e162_expected, 1, false,
+                __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            e162_depth_clear.depth_enable = r->x[0] != 0;
+            e162_depth_clear.depth_value = r->f[0];
+            e162_depth_clear.stencil_value = (uint32_t)r->x[1];
+            e162_depth_clear.stencil_mask = (uint32_t)r->x[2];
+            __atomic_store_n(&e162_depth_ready, 2,
+                             __ATOMIC_RELEASE);
+        }
+
+        static unsigned e161b_depth_count;
+        if (e161b_depth_count < 12) {
+            ++e161b_depth_count;
+            LOG("[E161B] DEPTH seq=%u depth_enable=%llu depth_value=%f stencil_value=0x%llx stencil_mask=0x%llx\n",
+                e161b_depth_count,
+                (unsigned long long)r->x[0],
+                (double)r->f[0],
+                (unsigned long long)r->x[1],
+                (unsigned long long)r->x[2]);
+        }
+    }
+
+    return GLES_COMMAND_UNSUPPORTED;
+}
+
+/*
+ * E162: diagnostic handoff of recorded Zelda depth-clear parameters.
+ * The decoder copies values; the UI never dereferences guest textures.
+ */
+
+
+bool e162_get_depth_clear(E162DepthClear *out)
+{
+    if (!out ||
+        __atomic_load_n(&e162_depth_ready, __ATOMIC_ACQUIRE) != 2)
+        return false;
+
+    *out = e162_depth_clear;
+    return true;
+}
+
+bool gles_diagnose_command_list(uint64_t handle)
+{
+    GlesExecStats stats;
+
+    memset(&e127_render_stats, 0, sizeof(e127_render_stats));
+    /* E167C3: reset association for each diagnostic submission. */
+    memset(&e167c3_state, 0, sizeof(e167c3_state));
+
+
+    /*
+     * Reuse the existing bounded traversal and nested CALL/JUMP
+     * handling, but inspect instead of executing commands.
+     */
+    memset(&stats, 0, sizeof(stats));
+    stats.remaining_records = GLES_EXEC_MAX_RECORDS;
+    stats.remaining_calls = GLES_EXEC_MAX_CALLS;
+
+    bool ok = gles_exec_list(
+        handle, 0, &stats, e127_inspect_render_command);
+
+    stats.failed = !ok;
+    gles_print_command_stats(&stats);
+
+    fprintf(stderr,
+        "[E127] RT total=%llu layout-compatible=%llu\n",
+        (unsigned long long)e127_render_stats.rt_total,
+        (unsigned long long)e127_render_stats.rt_layout_compatible);
+
+    fprintf(stderr,
+        "[E129] RT short=%llu zero-color=%llu multi-color=%llu "
+        "not-single=%llu missing-color=%llu\n",
+        (unsigned long long)e127_render_stats.rt_short,
+        (unsigned long long)e127_render_stats.rt_zero_color,
+        (unsigned long long)e127_render_stats.rt_multi_color,
+        (unsigned long long)e127_render_stats.rt_not_single,
+        (unsigned long long)e127_render_stats.rt_missing_color);
+
+    fprintf(stderr,
+        "[E129] RT has-view=%llu has-depth=%llu extra-color=%llu\n",
+        (unsigned long long)e127_render_stats.rt_has_view,
+        (unsigned long long)e127_render_stats.rt_has_depth,
+        (unsigned long long)e127_render_stats.rt_extra_color);
+
+    fprintf(stderr,
+        "[E131] color-only=%llu color+depth=%llu "
+        "depth-only=%llu no-attachments=%llu\n",
+        (unsigned long long)e127_render_stats.rt_color_only,
+        (unsigned long long)e127_render_stats.rt_color_depth,
+        (unsigned long long)e127_render_stats.rt_depth_only,
+        (unsigned long long)e127_render_stats.rt_no_attachments);
+
+    fprintf(stderr,
+        "[E131] color-view=%llu depth-view=%llu "
+        "color-view-setmask=%llu depth-view-setmask=%llu\n",
+        (unsigned long long)e127_render_stats.rt_color_view,
+        (unsigned long long)e127_render_stats.rt_depth_view,
+        (unsigned long long)e127_render_stats.rt_color_view_setmask,
+        (unsigned long long)e127_render_stats.rt_depth_view_setmask);
+
+    fprintf(stderr,
+        "[E127] CLEAR total=%llu layout-compatible=%llu\n",
+        (unsigned long long)e127_render_stats.clear_total,
+        (unsigned long long)e127_render_stats.clear_layout_compatible);
+
+    fprintf(stderr,
+        "[E127] CLEAR partial-mask=%llu nonfloat=%llu "
+        "other-attachment=%llu short=%llu\n",
+        (unsigned long long)e127_render_stats.clear_partial_mask,
+        (unsigned long long)e127_render_stats.clear_nonfloat,
+        (unsigned long long)e127_render_stats.clear_other_attachment,
+        (unsigned long long)e127_render_stats.clear_short_record);
+
     return ok;
 }

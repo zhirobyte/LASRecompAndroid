@@ -5,6 +5,10 @@
 #include <string.h>
 
 #include "nvn.h"
+#ifdef __ANDROID__
+#include "gles/texture_snapshot.h"
+#include "gles/record_rt_bridge.h"
+#endif
 
 #define JUMP_RESERVE (sizeof(CmdRec) + 8)
 
@@ -19,7 +23,99 @@ NVN(nvnCommandBufferInitialize) {
 NVN(nvnCommandBufferFinalize) { free(cb_of(A(0))); SET_HOST(A(0), 0); }
 NVN(nvnCommandBufferSetDebugLabel) { (void)c; }
 
+#ifdef __ANDROID__
+/* E167D3G4JR6B: diagnostic-only write tracking.
+ * No guest-memory dereferences in the bridge.
+ * Bridge lifetime is process-wide; never destroy while threads run.
+ */
+static GlesRecordRtBridge e167d3g4jr6b_bridge;
+static pthread_once_t e167d3g4jr6b_once = PTHREAD_ONCE_INIT;
+static bool e167d3g4jr6b_available;
+
+static void e167d3g4jr6b_initialize(void)
+{
+    e167d3g4jr6b_available =
+        gles_record_rt_bridge_init(&e167d3g4jr6b_bridge);
+    LOG("[E167D3G4JR6B] init=%u\n",
+        e167d3g4jr6b_available ? 1u : 0u);
+}
+
+/*
+ * R8D-4D1: diagnostic-only lookup of the currently registered
+ * generation-aware RT record identity.
+ *
+ * IMPORTANT:
+ * A lookup performed after record-address reuse cannot recover
+ * the original generation. Callers must not treat this as
+ * submission-time proof of identity or permission for GPU work.
+ */
+bool e167d3g4jr8d4_lookup_record_key(
+    uintptr_t record_address,
+    GlesRecordCoordinatorKey *out)
+{
+    if (!record_address || !out)
+        return false;
+
+    pthread_once(
+        &e167d3g4jr6b_once,
+        e167d3g4jr6b_initialize);
+
+    if (!e167d3g4jr6b_available)
+        return false;
+
+    if (pthread_mutex_lock(
+            &e167d3g4jr6b_bridge.mutex) != 0)
+        return false;
+
+    bool found = false;
+
+    for (size_t i = 0;
+         i < GLES_RECORD_COORDINATOR_CAPACITY;
+         ++i) {
+        const GlesRecordCoordinatorSlot *slot =
+            &e167d3g4jr6b_bridge.records.slots[i];
+
+        if (!slot->occupied ||
+            slot->key.address != record_address)
+            continue;
+
+        GlesRecordRtMetadata metadata = {0};
+
+        if (gles_record_rt_sidecar_lookup(
+                &e167d3g4jr6b_bridge.sidecar,
+                slot->key,
+                &metadata)) {
+            *out = slot->key;
+            found = true;
+        }
+
+        break;
+    }
+
+    pthread_mutex_unlock(
+        &e167d3g4jr6b_bridge.mutex);
+
+    return found;
+}
+static void e167d3g4jr6b_written(uintptr_t address, size_t size)
+{
+    pthread_once(&e167d3g4jr6b_once, e167d3g4jr6b_initialize);
+
+    if (!e167d3g4jr6b_available)
+        return;
+
+    (void)gles_record_rt_bridge_invalidate(
+        &e167d3g4jr6b_bridge,
+        (GlesRecordRange){address, size});
+}
+#endif
 static CmdRec *raw_rec(uint64_t at, uint32_t op, uint32_t size) {
+#ifdef __ANDROID__
+    /* E167D3G4JR6B: invalidate the complete reserved range
+     * before any command-memory write.
+     */
+    e167d3g4jr6b_written((uintptr_t)at, (size_t)size);
+#endif
     CmdRec *r = (CmdRec *)(uintptr_t)at;
     memset(r, 0, sizeof *r);
     r->op = op;
@@ -191,6 +287,21 @@ NVN(nvnCommandBufferSetSamplerPool) {
 
 // SetRenderTargets(cmd, n, colors[], colorViews[], depth, depthView)
 // extra: { u64 tex[8]; NvnTextureView views[8]; u8 has_view[8]; u64 depth; NvnTextureView dview; u8 has_dview }
+#ifdef __ANDROID__
+/* E159B_CAPTURE: diagnostic value-only metadata, not guest texture storage. */
+typedef struct {
+    unsigned width, height, color_format, depth_format;
+} E159BInfo;
+static E159BInfo e159b_info;
+static int e159b_state;
+
+bool e159b_read_info(E159BInfo *out) {
+    if (!out || __atomic_load_n(&e159b_state, __ATOMIC_ACQUIRE) != 2)
+        return false;
+    *out = e159b_info;
+    return true;
+}
+#endif
 typedef struct {
     uint64_t tex[8];
     NvnTextureView views[8];
@@ -211,9 +322,267 @@ NVN(nvnCommandBufferSetRenderTargets) {
     }
     rt.depth = s.x[4] ? (uint64_t)(uintptr_t)HOST(NvnTexture, s.x[4]) : 0;
     if (s.x[5]) { rt.has_dview = 1; memcpy(&rt.dview, (void *)(uintptr_t)s.x[5], sizeof(NvnTextureView)); }
+#ifdef __ANDROID__
+    /* E150 recorder-side texture metadata.
+     * Read host texture fields while recording, never from the UI decoder.
+     * Diagnostic only: the existing command payload remains unchanged.
+     */
+    {
+        static unsigned e150_count;
+        unsigned index = __atomic_fetch_add(
+            &e150_count, 1u, __ATOMIC_RELAXED);
+        if (index < 64u) {
+            LOG("[E150] RT command=%u colors=%d depth=%u\n",
+                index, n, rt.depth ? 1u : 0u);
+
+            for (int i = 0; i < n; ++i) {
+                const NvnTexture *t =
+                    (const NvnTexture *)(uintptr_t)rt.tex[i];
+                if (!t) {
+                    LOG("[E150] COLOR slot=%d null\n", i);
+                    continue;
+                }
+
+                LOG("[E150] COLOR slot=%d id=%llu fmt=%#x "
+                    "size=%ux%ux%u levels=%u samples=%u target=%#x "
+                    "flags=%#x view=%u mask=%#x viewfmt=%#x "
+                    "base=%u layer=%u\n",
+                    i, (unsigned long long)t->debug_id,
+                    (unsigned)t->format,
+                    (unsigned)t->width, (unsigned)t->height,
+                    (unsigned)t->depth, (unsigned)t->levels,
+                    (unsigned)t->samples, (unsigned)t->target,
+                    (unsigned)t->flags, (unsigned)rt.has_view[i],
+                    (unsigned)rt.views[i].setmask,
+                    (unsigned)rt.views[i].format,
+                    (unsigned)rt.views[i].base_level,
+                    (unsigned)rt.views[i].min_layer);
+            }
+
+            if (rt.depth) {
+                const NvnTexture *t =
+                    (const NvnTexture *)(uintptr_t)rt.depth;
+                LOG("[E150] DEPTH id=%llu fmt=%#x "
+                    "size=%ux%ux%u levels=%u samples=%u target=%#x "
+                    "flags=%#x view=%u mask=%#x viewfmt=%#x "
+                    "base=%u layer=%u\n",
+                    (unsigned long long)t->debug_id,
+                    (unsigned)t->format,
+                    (unsigned)t->width, (unsigned)t->height,
+                    (unsigned)t->depth, (unsigned)t->levels,
+                    (unsigned)t->samples, (unsigned)t->target,
+                    (unsigned)t->flags, (unsigned)rt.has_dview,
+                    (unsigned)rt.dview.setmask,
+                    (unsigned)rt.dview.format,
+                    (unsigned)rt.dview.base_level,
+                    (unsigned)rt.dview.min_layer);
+            }
+        }
+    }
+#endif
+#ifdef __ANDROID__
+    /* E159B_CAPTURE: recording-thread-only host texture reads. */
+    if (n == 1 && rt.tex[0] && rt.depth) {
+        int expected = 0;
+        if (__atomic_compare_exchange_n(
+                &e159b_state, &expected, 1, false,
+                __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            const NvnTexture *color =
+                (const NvnTexture *)(uintptr_t)rt.tex[0];
+            const NvnTexture *depth =
+                (const NvnTexture *)(uintptr_t)rt.depth;
+
+            e159b_info.width = color->width;
+            e159b_info.height = color->height;
+            e159b_info.color_format = color->format;
+            e159b_info.depth_format = depth->format;
+
+            __atomic_store_n(&e159b_state, 2, __ATOMIC_RELEASE);
+        }
+    }
+#endif
+#ifdef __ANDROID__
+    /* E167B2_RECORD_TIME_KEYS
+     * Diagnostic only. Capture identities while recording.
+     * Never dereference an RtRec pointer in this block.
+     * Do not modify the existing command payload.
+     */
+    {
+        extern bool e167a_lookup_texture_key(
+            uintptr_t pointer_value,
+            GlesTextureSnapshotKey *out);
+
+        static unsigned e167b2_count;
+        unsigned index = __atomic_fetch_add(
+            &e167b2_count, 1u, __ATOMIC_RELAXED);
+
+        if (index < 64u) {
+            unsigned found = 0u;
+            unsigned missing = 0u;
+
+            for (int i = 0; i < n; ++i) {
+                if (!rt.tex[i])
+                    continue;
+
+                GlesTextureSnapshotKey key = {0};
+                bool ok = e167a_lookup_texture_key(
+                    (uintptr_t)rt.tex[i], &key);
+
+                if (ok)
+                    ++found;
+                else
+                    ++missing;
+
+                LOG("[E167B2] rt=%u color=%d found=%u "
+                    "id=%llu generation=%llu view=%u\n",
+                    index,
+                    i,
+                    ok ? 1u : 0u,
+                    (unsigned long long)key.debug_id,
+                    (unsigned long long)key.generation,
+                    (unsigned)rt.has_view[i]);
+            }
+
+            if (rt.depth) {
+                GlesTextureSnapshotKey key = {0};
+                bool ok = e167a_lookup_texture_key(
+                    (uintptr_t)rt.depth, &key);
+
+                if (ok)
+                    ++found;
+                else
+                    ++missing;
+
+                LOG("[E167B2] rt=%u depth found=%u "
+                    "id=%llu generation=%llu view=%u\n",
+                    index,
+                    ok ? 1u : 0u,
+                    (unsigned long long)key.debug_id,
+                    (unsigned long long)key.generation,
+                    (unsigned)rt.has_dview);
+            }
+
+            LOG("[E167B2] rt=%u colors=%d depth=%u "
+                "found=%u missing=%u\n",
+                index,
+                n,
+                rt.depth ? 1u : 0u,
+                found,
+                missing);
+        }
+    }
+#endif
     CmdRec *r = record(c, CMD_SET_RENDER_TARGETS, sizeof rt, &s);
     r->x[0] = (uint64_t)n;
     memcpy(r->extra, &rt, sizeof rt);
+#ifdef __ANDROID__
+    /* E167D3G4JR7A: diagnostic-only, value-only RT registration.
+     * Never use these records to authorize GPU execution.
+     */
+    {
+        extern bool e167a_lookup_texture_key(
+            uintptr_t pointer_value,
+            GlesTextureSnapshotKey *out);
+
+        GlesRecordRtMetadata metadata = {0};
+        GlesRecordCoordinatorKey key = {0};
+        unsigned missing = 0u;
+        bool registered = false;
+
+        metadata.valid = true;
+
+        if (n >= 0 && n <= GLES_RECORD_RT_MAX_COLORS) {
+            metadata.color_count = (uint32_t)n;
+
+            for (int i = 0; i < n; ++i) {
+                if (!rt.tex[i])
+                    continue;
+
+                metadata.color_present[i] = 1;
+                metadata.color_view_present[i] =
+                    rt.has_view[i] ? 1 : 0;
+
+                if (!e167a_lookup_texture_key(
+                        (uintptr_t)rt.tex[i],
+                        &metadata.colors[i])) {
+                    ++missing;
+                }
+            }
+
+            if (rt.depth) {
+                metadata.depth_present = 1;
+                metadata.depth_view_present =
+                    rt.has_dview ? 1 : 0;
+
+                if (!e167a_lookup_texture_key(
+                        (uintptr_t)rt.depth,
+                        &metadata.depth)) {
+                    ++missing;
+                }
+            }
+
+            pthread_once(
+                &e167d3g4jr6b_once,
+                e167d3g4jr6b_initialize);
+
+            if (e167d3g4jr6b_available && missing == 0u) {
+                registered = gles_record_rt_bridge_register(
+                    &e167d3g4jr6b_bridge,
+                    (GlesRecordRange){
+                        (uintptr_t)r,
+                        (size_t)r->size
+                    },
+                    &metadata,
+                    &key);
+            }
+        }
+
+        static unsigned successes;
+        static unsigned failures;
+        static unsigned logged;
+
+        if (registered)
+            __atomic_fetch_add(&successes, 1u, __ATOMIC_RELAXED);
+        else
+            __atomic_fetch_add(&failures, 1u, __ATOMIC_RELAXED);
+
+        unsigned index =
+            __atomic_fetch_add(&logged, 1u, __ATOMIC_RELAXED);
+
+        if (index < 64u) {
+            LOG("[E167D3G4JR7A] rt=%u record=0x%llx "
+                "registered=%u missing=%u generation=%llu "
+                "success=%u failure=%u\n",
+                index,
+                (unsigned long long)(uintptr_t)r,
+                registered ? 1u : 0u,
+                missing,
+                (unsigned long long)key.generation,
+                __atomic_load_n(&successes, __ATOMIC_RELAXED),
+                __atomic_load_n(&failures, __ATOMIC_RELAXED));
+        }
+    }
+#endif
+#ifdef __ANDROID__
+    /* E167D3G4E_RECORD_ADDRESS
+     * Diagnostic only. No command payload or GPU behavior changes.
+     */
+    {
+        static unsigned e167d3g4e_count;
+        unsigned index = __atomic_fetch_add(
+            &e167d3g4e_count, 1u, __ATOMIC_RELAXED);
+
+        if (index < 64u) {
+            LOG("[E167D3G4E] rt=%u record=0x%llx size=%u "
+                "colors=%d depth=%u\n",
+                index,
+                (unsigned long long)(uintptr_t)r,
+                (unsigned)r->size,
+                n,
+                rt.depth ? 1u : 0u);
+        }
+    }
+#endif
 }
 
 // viewports/scissors/depth ranges

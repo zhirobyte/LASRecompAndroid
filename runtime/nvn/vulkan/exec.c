@@ -25,6 +25,8 @@ static int prof = -1;
 static uint64_t prof_exec, prof_draw, prof_sets, prof_vtx, prof_submit, prof_pre, prof_key, prof_dyn, prof_tex, prof_up, prof_gpu;
 static VkQueryPool prof_qp;
 static uint64_t cum_exec, cum_wait, cum_draws, cum_submits;  // (profiling) never reset: hitch log
+#include "../backend_select.h"
+#include "../gles/submission_queue.h"
 #ifdef __ANDROID__
 uint64_t vk_cum_wait_ns(void) { return cum_wait; }  // (the performance overlay: time spent waiting on the GPU)
 #endif
@@ -4955,6 +4957,55 @@ bool vk_async_on(void);
 void vk_async_execute(uint64_t handle);
 void vk_execute_now(uint64_t handle);
 void backend_execute(uint64_t handle) {
+    if (nvn_backend_kind() == NVN_BACKEND_GLES_EXPERIMENTAL) {
+        /*
+         * E123 real command handoff.
+         * Keep guest command memory alive until the UI thread has
+         * finished diagnostic decoding. No GPU execution occurs.
+         */
+        extern void kernel_blocking_begin(void);
+        extern void kernel_blocking_end(void);
+
+        uint64_t e123_sequence = 0;
+        GlesSubmissionState e123_state = GLES_SUBMISSION_PENDING;
+
+        /* E166J: registry checkpoint before enqueue. */
+        extern void e166j_log_texture_registry_stats(void);
+        e166j_log_texture_registry_stats();
+        if (!gles_submission_enqueue(handle, &e123_sequence))
+            FATAL("[gles-backend] E123 enqueue failed\n");
+
+        LOG("[gles-backend] E123 guest queued sequence=%llu handle=%llx\n",
+            (unsigned long long)e123_sequence,
+            (unsigned long long)handle);
+
+        kernel_blocking_begin();
+
+        /*
+         * Never return to the guest on timeout while the UI
+         * thread might still be accessing command memory.
+         *
+         * Wait in bounded intervals for diagnostics, but do
+         * not abandon ownership of the pending command.
+         */
+        bool e123_done = false;
+        while (!e123_done) {
+            e123_done = gles_submission_wait_completion(
+                e123_sequence, 1000, &e123_state);
+            if (!e123_done)
+                LOG("[gles-backend] E123 still waiting for UI decode\n");
+        }
+
+        kernel_blocking_end();
+
+        if (!gles_submission_retire(e123_sequence))
+            FATAL("[gles-backend] E123 retirement failed\n");
+
+        LOG("[gles-backend] E123 guest observed UI completion state=%d\n",
+            (int)e123_state);
+
+        FATAL("[gles-backend] E123 diagnostic handoff complete; GPU execution not implemented\n");
+    }
     if (vk_async_on()) vk_async_execute(handle);
     else vk_execute_now(handle);
 }

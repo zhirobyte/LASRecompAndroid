@@ -4,6 +4,207 @@
 
 #include "../kernel.h"
 #include "nvn.h"
+#ifdef __ANDROID__
+#include "backend_select.h"
+/* E166F_TEXTURE_LIFECYCLE: Android diagnostic metadata only.
+ * No GL calls and no dereferencing of stored pointer identities.
+ * A fixed-size bridge deliberately refuses overflow rather than evicting.
+ */
+#include "gles/snapshot_registry.h"
+#include <pthread.h>
+
+typedef struct {
+    uintptr_t pointer_value;
+    GlesTextureSnapshotKey key;
+    bool occupied;
+} E166FEntry;
+
+static GlesSnapshotRegistry e166f_registry;
+static E166FEntry e166f_entries[GLES_SNAPSHOT_REGISTRY_CAPACITY];
+static pthread_mutex_t e166f_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t e166f_once = PTHREAD_ONCE_INIT;
+static bool e166f_available;
+static unsigned e166f_registered;
+static unsigned e166f_retired;
+static unsigned e166f_rejected;
+
+static void e166f_initialize_once(void)
+{
+    e166f_available = gles_snapshot_registry_init(&e166f_registry);
+    LOG("[E166F] registry initialization=%s capacity=%u\n",
+        e166f_available ? "PASS" : "FAIL",
+        (unsigned)GLES_SNAPSHOT_REGISTRY_CAPACITY);
+}
+
+static void e166f_register_texture(const NvnTexture *t)
+{
+    if (!t)
+        return;
+
+    pthread_once(&e166f_once, e166f_initialize_once);
+    pthread_mutex_lock(&e166f_mutex);
+
+    E166FEntry *free_entry = NULL;
+    bool duplicate = false;
+
+    for (size_t i = 0; i < GLES_SNAPSHOT_REGISTRY_CAPACITY; ++i) {
+        E166FEntry *entry = &e166f_entries[i];
+        if (entry->occupied && entry->pointer_value == (uintptr_t)t)
+            duplicate = true;
+        if (!entry->occupied && !free_entry)
+            free_entry = entry;
+    }
+
+    GlesTextureSnapshot metadata = {0};
+    metadata.key.pointer_value = (uintptr_t)t;
+    metadata.key.debug_id = t->debug_id;
+    metadata.target = t->target;
+    metadata.format = t->format;
+    metadata.flags = t->flags;
+    metadata.width = t->width;
+    metadata.height = t->height;
+    metadata.depth = t->depth;
+    metadata.levels = t->levels;
+    metadata.samples = t->samples;
+    metadata.ds_mode = t->ds_mode;
+    metadata.stride = t->stride;
+    metadata.pool_offset = t->pool_offset;
+
+    GlesTextureSnapshotKey key = {0};
+    bool ok = e166f_available && !duplicate && free_entry &&
+              gles_snapshot_registry_register(&e166f_registry,
+                                               &metadata, &key);
+
+    if (ok) {
+        free_entry->pointer_value = (uintptr_t)t;
+        free_entry->key = key;
+        free_entry->occupied = true;
+        ++e166f_registered;
+    } else {
+        ++e166f_rejected;
+    }
+
+    if (!ok || e166f_registered <= 8 ||
+        (e166f_registered % 128) == 0) {
+        LOG("[E166F] register id=%llu generation=%llu "
+            "ok=%u registered=%u rejected=%u live=%zu\n",
+            (unsigned long long)t->debug_id,
+            (unsigned long long)key.generation,
+            ok ? 1u : 0u,
+            e166f_registered, e166f_rejected,
+            e166f_available ?
+                gles_snapshot_registry_count(&e166f_registry) : 0u);
+    }
+
+    pthread_mutex_unlock(&e166f_mutex);
+}
+
+/* E166J_CHECKPOINT: exact registry totals at a diagnostic checkpoint. */
+void e166j_log_texture_registry_stats(void)
+{
+    pthread_once(&e166f_once, e166f_initialize_once);
+    pthread_mutex_lock(&e166f_mutex);
+
+    size_t live = e166f_available ?
+        gles_snapshot_registry_count(&e166f_registry) : 0u;
+
+    LOG("[E166J] registered=%u retired=%u rejected=%u "
+        "live=%zu capacity=%u available=%u\n",
+        e166f_registered,
+        e166f_retired,
+        e166f_rejected,
+        live,
+        (unsigned)GLES_SNAPSHOT_REGISTRY_CAPACITY,
+        e166f_available ? 1u : 0u);
+
+    pthread_mutex_unlock(&e166f_mutex);
+}
+/* E167A_TEXTURE_KEY_LOOKUP
+ * Resolve a texture identity to its current generation-aware key.
+ * The supplied pointer is compared numerically, never dereferenced.
+ * A caller must capture this key while the texture is known to be alive.
+ */
+bool e167a_lookup_texture_key(
+    uintptr_t pointer_value,
+    GlesTextureSnapshotKey *out)
+{
+    if (!pointer_value || !out)
+        return false;
+
+    pthread_once(&e166f_once, e166f_initialize_once);
+    pthread_mutex_lock(&e166f_mutex);
+
+    bool found = false;
+
+    for (size_t i = 0; i < GLES_SNAPSHOT_REGISTRY_CAPACITY; ++i) {
+        const E166FEntry *entry = &e166f_entries[i];
+
+        if (entry->occupied &&
+            entry->pointer_value == pointer_value) {
+            GlesTextureSnapshot metadata = {0};
+
+            if (e166f_available &&
+                gles_snapshot_registry_lookup(
+                    &e166f_registry, entry->key, &metadata)) {
+                *out = entry->key;
+                found = true;
+            }
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&e166f_mutex);
+    return found;
+}
+static void e166f_retire_texture(const NvnTexture *t)
+{
+    if (!t)
+        return;
+
+    pthread_once(&e166f_once, e166f_initialize_once);
+    pthread_mutex_lock(&e166f_mutex);
+
+    for (size_t i = 0; i < GLES_SNAPSHOT_REGISTRY_CAPACITY; ++i) {
+        E166FEntry *entry = &e166f_entries[i];
+
+        if (!entry->occupied ||
+            entry->pointer_value != (uintptr_t)t)
+            continue;
+
+        bool ok = e166f_available &&
+                  gles_snapshot_registry_retire(&e166f_registry,
+                                                entry->key);
+
+        if (ok) {
+            ++e166f_retired;
+            if (e166f_retired <= 8 || (e166f_retired % 128) == 0) {
+                LOG("[E166F] retire id=%llu generation=%llu "
+                    "retired=%u live=%zu\n",
+                    (unsigned long long)entry->key.debug_id,
+                    (unsigned long long)entry->key.generation,
+                    e166f_retired,
+                    gles_snapshot_registry_count(&e166f_registry));
+            }
+        } else {
+            LOG("[E166F] retire FAILED id=%llu generation=%llu\n",
+                (unsigned long long)entry->key.debug_id,
+                (unsigned long long)entry->key.generation);
+        }
+
+        /* Keep the entry occupied if retirement fails: do not
+         * silently allow reuse of an unresolved identity.
+         */
+        if (ok) {
+            entry->occupied = false;
+            entry->pointer_value = 0;
+            entry->key = (GlesTextureSnapshotKey){0};
+        }
+        break;
+    }
+
+    pthread_mutex_unlock(&e166f_mutex);
+}
+#endif
 
 void renderer_sync(void);
 
@@ -126,6 +327,8 @@ void vk_async_wait_id(uint64_t id);
 void kernel_blocking_begin(void);
 void kernel_blocking_end(void);
 NVN(nvnQueueFinish) {
+    if (nvn_backend_kind() == NVN_BACKEND_GLES_EXPERIMENTAL)
+        FATAL("[gles-backend] nvnQueueFinish requires GLES synchronization\n");
     (void)c;
     kernel_blocking_begin();  // (a long wait: core 0 to the game's other threads, kernel.c)
     if (vk_async_on()) vk_async_drain();  // (the render thread's translation first: vulkan/async.c)
@@ -145,7 +348,10 @@ uint64_t renderer_fence_seq(void);
 void renderer_wait_seq(uint64_t seq);
 #ifdef __ANDROID__
 NVN(nvnQueueFenceSync) {
+    if (nvn_backend_kind() == NVN_BACKEND_GLES_EXPERIMENTAL)
+        FATAL("[gles-backend] nvnQueueFenceSync requires GLES fence tracking\n");
     NvnSync *s = sync_of(A(1));
+    s->gles_acquire_ready = 0;
     s->signaled = 1;
     if (vk_async_on()) s->lseq = vk_async_fence(A(1));  // (its submission is known once the render thread gets there)
     else s->seq = renderer_fence_seq();
@@ -162,6 +368,22 @@ NVN(nvnSyncFinalize) { free(HOST(NvnSync, A(0))); SET_HOST(A(0), 0); }
 NVN(nvnSyncSetDebugLabel) { (void)c; }
 void renderer_flush(void);
 NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
+#ifdef __ANDROID__
+    if (nvn_backend_kind() == NVN_BACKEND_GLES_EXPERIMENTAL) {
+        NvnSync *s = sync_of(A(0));
+        if (s->gles_acquire_ready && s->signaled &&
+            s->seq == 0 && s->lseq == 0) {
+            LOG("[gles-backend] completed window-acquire sync wait\n");
+            RET(0);
+            return;
+        }
+        FATAL("[gles-backend] unsupported GPU sync wait: guest=%llx signaled=%d seq=%llu lseq=%llu acquire=%d\n",
+              (unsigned long long)A(0), s->signaled,
+              (unsigned long long)s->seq,
+              (unsigned long long)s->lseq,
+              s->gles_acquire_ready);
+    }
+#endif
     static int flush = -1;
     static uint64_t n;
     if (flush < 0) flush = getenv("LARECOMP_SYNC_FLUSH") ? 1 : 0;
@@ -396,12 +618,21 @@ NVN(nvnTextureInitialize) {
     if (t->flags & 2)
         LOG("[nvn] video texture %p: %ux%u fmt %#x flags %#x target %u addr %llx stride %llu\n", t, t->width, t->height,
             t->format, t->flags, t->target, t->addr, t->stride);
+#ifdef __ANDROID__
+    e166f_register_texture(t);
+#endif
     SET_HOST(A(0), t);
     RET(1);
 }
 NVN(nvnTextureFinalize) {
     NvnTexture *t = HOST(NvnTexture, A(0));
-    if (t) { backend_texture_destroyed(t); free(t); }
+    if (t) {
+#ifdef __ANDROID__
+        e166f_retire_texture(t);
+#endif
+        backend_texture_destroyed(t);
+        free(t);
+    }
     SET_HOST(A(0), 0);
 }
 NVN(nvnTextureSetDebugLabel) {
@@ -683,7 +914,14 @@ NVN(nvnWindowSetCrop) { int *cr = WIN->crop; cr[0] = (int)A(1); cr[1] = (int)A(2
 NVN(nvnWindowGetCrop) { memcpy(AP(1), WIN->crop, 16); }
 NVN(nvnWindowAcquireTexture) {
     NvnWindow *w = WIN;
-    if (A(1)) sync_of(A(1))->signaled = 1;
+    if (A(1)) {
+        NvnSync *acquire_sync = sync_of(A(1));
+        acquire_sync->signaled = 1;
+#ifdef __ANDROID__
+        if (nvn_backend_kind() == NVN_BACKEND_GLES_EXPERIMENTAL)
+            acquire_sync->gles_acquire_ready = 1;
+#endif
+    }
     *(int32_t *)AP(2) = w->next;
     w->next = (w->next + 1) % (w->active ? w->active : 1);
     RET(0);  // NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS

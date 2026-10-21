@@ -43,7 +43,19 @@ set(IMGUI ${R}/third_party/imgui)
 set(IMGUI_SRC ${IMGUI}/imgui.cpp ${IMGUI}/imgui_draw.cpp ${IMGUI}/imgui_tables.cpp ${IMGUI}/imgui_widgets.cpp
     ${IMGUI}/backends/imgui_impl_sdl3.cpp ${IMGUI}/backends/imgui_impl_vulkan.cpp ${IMGUI}/backends/imgui_impl_opengl3.cpp)
 
-add_library(main SHARED ${RT_SRC} ${R}/runtime/platform/android.c ${R}/runtime/nvn/gles/probe.c ${R}/runtime/nvn/gles/exec.c ${R}/runtime/nvn/gles/selftest.c ${R}/runtime/nvn/gles/clear.c ${R}/runtime/nvn/gles/clear_test.c ${R}/runtime/nvn/gles/dispatch_test.c ${R}/runtime/nvn/gles/render_target.c ${R}/runtime/nvn/gles/render_target_test.c ${R}/runtime/nvn/gles/render_target_switch_test.c ${R}/runtime/nvn/gles/texture_upload_test.c ${R}/runtime/nvn/gles/texture_manager.c ${R}/runtime/nvn/gles/texture_manager_test.c ${R}/runtime/nvn/gles/texture_cache.c ${R}/runtime/nvn/gles/texture_cache_test.c ${R}/runtime/nvn/gles/lifecycle.c ${R}/runtime/nvn/gles/lifecycle_test.c ${R}/runtime/nvn/gles/lifecycle_processor.c ${R}/runtime/nvn/gles/lifecycle_processor_test.c ${R}/runtime/nvn/gles/lifecycle_sync.c ${R}/runtime/nvn/gles/lifecycle_sync_test.c ${R}/runtime/nvn/gles/identity.c ${R}/runtime/nvn/gles/identity_test.c ${R}/runtime/nvn/gles/lifecycle_identity.c ${R}/runtime/nvn/gles/lifecycle_identity_test.c ${VK_SRC} ${UI_SRC} ${IMGUI_SRC}
+# E167D3G4JR1_RECORD_METADATA_MODULES
+set(E167D3G4J_RECORD_SOURCES
+    ${R}/runtime/nvn/gles/record_range.c
+    ${R}/runtime/nvn/gles/record_identity.c
+    ${R}/runtime/nvn/gles/record_coordinator.c
+    ${R}/runtime/nvn/gles/record_rt_metadata.c
+    ${R}/runtime/nvn/gles/record_rt_sidecar.c
+    ${R}/runtime/nvn/gles/record_rt_validation.c
+    ${R}/runtime/nvn/gles/record_rt_bridge.c
+    ${R}/runtime/nvn/gles/submission_snapshot.c
+)
+add_library(main SHARED ${E167D3G4J_RECORD_SOURCES} ${RT_SRC} ${R}/runtime/platform/android.c ${R}/runtime/nvn/gles/probe.c ${R}/runtime/nvn/gles/exec.c ${R}/runtime/nvn/gles/selftest.c ${R}/runtime/nvn/gles/clear.c ${R}/runtime/nvn/gles/clear_test.c ${R}/runtime/nvn/gles/dispatch_test.c ${R}/runtime/nvn/gles/render_target.c
+    ${R}/runtime/nvn/gles/framebuffer_probe.c ${R}/runtime/nvn/gles/texture_snapshot.c ${R}/runtime/nvn/gles/texture_snapshot_test.c ${R}/runtime/nvn/gles/snapshot_registry.c ${R}/runtime/nvn/gles/snapshot_registry_test.c ${R}/runtime/nvn/gles/render_target_test.c ${R}/runtime/nvn/gles/render_target_switch_test.c ${R}/runtime/nvn/gles/texture_upload_test.c ${R}/runtime/nvn/gles/texture_manager.c ${R}/runtime/nvn/gles/texture_manager_test.c ${R}/runtime/nvn/gles/texture_cache.c ${R}/runtime/nvn/gles/texture_cache_test.c ${R}/runtime/nvn/gles/lifecycle.c ${R}/runtime/nvn/gles/lifecycle_test.c ${R}/runtime/nvn/gles/lifecycle_processor.c ${R}/runtime/nvn/gles/lifecycle_processor_test.c ${R}/runtime/nvn/gles/lifecycle_sync.c ${R}/runtime/nvn/gles/lifecycle_sync_test.c ${R}/runtime/nvn/gles/identity.c ${R}/runtime/nvn/gles/identity_test.c ${R}/runtime/nvn/gles/submission_queue.c ${R}/runtime/nvn/gles/submission_envelope.c ${R}/runtime/nvn/gles/lifecycle_identity.c ${R}/runtime/nvn/gles/lifecycle_identity_test.c ${VK_SRC} ${UI_SRC} ${IMGUI_SRC}
             ${DEPS}/volk/volk.c ${R}/android/common/guest_window.c)
 # the UI sources are plain C++ apart from __APPLE__ blocks (as on Linux / Windows)
 set_source_files_properties(${UI_SRC} PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-xc++")
