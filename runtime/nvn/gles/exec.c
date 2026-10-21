@@ -7,6 +7,10 @@
  * Do not use it as a replacement for backend_execute().
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -14,6 +18,12 @@
 #include <string.h>
 
 #include "../nvn.h"
+#include "h1_real_draw_capture.h"
+#include "h1_draw_state_capture.h"
+#include "h1_guest_memory_read.h"
+#include "h1_indexed_draw_test.h"
+#include "h1_texture_trace.h"
+#include "h1_descriptor_probe.h"
 #ifdef __ANDROID__
 #include "record_coordinator.h"
 #endif
@@ -308,9 +318,92 @@ static E167C3State e167c3_state;
 static E162DepthClear e162_depth_clear;
 static int e162_depth_ready;
 
+static H1RealDrawCapture h1_real_draw_capture;
+static H1DrawState h1_draw_state;
+
+#ifdef __ANDROID__
+static void h1_capture_first_geometry(
+    const H1DrawState *state,
+    const CmdRec *r)
+{
+    if (!state || !r || r->op != CMD_DRAW_ELEMENTS)
+        return;
+
+    if (!(state->vertex_buffer_valid & 1u))
+        return;
+
+    const H1VertexRange *vb = &state->vertex_buffers[0];
+
+    const uint32_t index_type = (uint32_t)r->x[1];
+    const uint32_t index_count = (uint32_t)r->x[2];
+    const uint64_t index_address = r->x[3];
+
+    /*
+     * Diagnostic scope: the first observed 4-vertex,
+     * 6-index draw using 32-bit indices.
+     *
+     * No hardcoded guest addresses.
+     */
+    if (index_type != 2 || index_count != 6 ||
+        vb->size < 64 || vb->address == 0 ||
+        index_address == 0)
+        return;
+
+    uint8_t vertices[64] = {0};
+    uint32_t indices[6] = {0};
+
+    bool vertex_ok = h1_guest_memory_read(
+        vb->address, vertices, sizeof(vertices));
+
+    bool index_ok = h1_guest_memory_read(
+        index_address, indices, sizeof(indices));
+
+    fprintf(stderr,
+        "[h1-geometry] vertex_read=%d index_read=%d\n",
+        vertex_ok ? 1 : 0,
+        index_ok ? 1 : 0);
+
+    if (!vertex_ok || !index_ok)
+        return;
+    h1_test_indexed_draw(vertices, indices);
+
+    for (unsigned i = 0; i < 4; ++i) {
+        float a[2], b[2];
+
+        memcpy(a, vertices + i * 16, sizeof(a));
+        memcpy(b, vertices + i * 16 + 8, sizeof(b));
+
+        fprintf(stderr,
+            "[h1-geometry] vertex=%u "
+            "attr0=(%.6f,%.6f) "
+            "attr1=(%.6f,%.6f)\n",
+            i, a[0], a[1], b[0], b[1]);
+    }
+
+    fprintf(stderr,
+        "[h1-geometry] indices=%u,%u,%u,%u,%u,%u\n",
+        indices[0], indices[1], indices[2],
+        indices[3], indices[4], indices[5]);
+}
+#endif
 static GlesCommandResult e127_inspect_render_command(
     const CmdRec *r)
 {
+    /*
+     * H1-15T10: observe real indexed draws only.
+     * The command remains unsupported by this diagnostic backend.
+     */
+    h1_observe_draw_state(&h1_draw_state, r);
+    h1_trace_texture_record(r);
+#ifdef __ANDROID__
+    h1_probe_descriptor_record(r);
+#endif
+#ifdef __ANDROID__
+    if (r->op == CMD_DRAW_ELEMENTS &&
+        !h1_real_draw_capture.first_captured)
+        h1_capture_first_geometry(&h1_draw_state, r);
+#endif
+    h1_capture_real_draw(&h1_real_draw_capture, r);
     if (r->op == CMD_SET_RENDER_TARGETS) {
 #ifdef __ANDROID__
         /*
@@ -609,6 +702,8 @@ bool gles_diagnose_command_list(uint64_t handle)
     memset(&e127_render_stats, 0, sizeof(e127_render_stats));
     /* E167C3: reset association for each diagnostic submission. */
     memset(&e167c3_state, 0, sizeof(e167c3_state));
+    memset(&h1_draw_state, 0, sizeof(h1_draw_state));
+    memset(&h1_real_draw_capture, 0, sizeof(h1_real_draw_capture));
 
 
     /*
